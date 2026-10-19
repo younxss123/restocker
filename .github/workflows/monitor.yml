@@ -1,15 +1,24 @@
 name: PS5 Pro restock monitor
 
 on:
+  # Each run watches for ~55 minutes, then starts the next run itself (last step),
+  # so checking never stops. The schedule is only a backup to restart the chain if
+  # it ever breaks; GitHub runs scheduled jobs late or not at all on new repos.
   schedule:
-    # Each run watches for ~55 minutes. A new run queues every 10 minutes so the
-    # next one starts as soon as the current one ends (GitHub often starts them late).
-    - cron: "*/10 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
+    inputs:
+      run_for:
+        description: "Seconds to watch before handing off to the next run"
+        default: "3300"
 
 concurrency:
   group: monitor
   cancel-in-progress: false
+
+permissions:
+  actions: write   # lets the last step start the next run
+  contents: read
 
 jobs:
   check:
@@ -32,7 +41,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_MENTION: ${{ vars.DISCORD_MENTION || '@everyone' }}
           CHECK_INTERVAL: "20"
-          RUN_FOR: "3300"
+          RUN_FOR: ${{ inputs.run_for || '3300' }}
           STATE_FILE: state.txt
         run: python monitor.py
       - name: Save last status
@@ -41,3 +50,9 @@ jobs:
         with:
           path: state.txt
           key: stock-state-${{ github.run_id }}
+      - name: Start the next run
+        # Skipped when you cancel a run by hand, so cancelling stops the chain.
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run monitor.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
