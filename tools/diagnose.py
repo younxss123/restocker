@@ -21,9 +21,21 @@ def paths(node, path=""):
             paths(v, f"{path}[{i}]")
 
 
-monitor.new_session()
-r = monitor._session.get(monitor.PRODUCT_URL, timeout=20, headers={"Referer": monitor.HOME_URL})
-m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
+import time
+
+m = None
+for attempt in range(6):
+    monitor._browser = attempt
+    monitor.new_session()
+    r = monitor._session.get(monitor.PRODUCT_URL, timeout=20, headers={"Referer": monitor.HOME_URL})
+    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
+    print(f"attempt {attempt} {monitor.BROWSERS[attempt % 2]}: HTTP {r.status_code} len={len(r.text)} "
+          f"blocked={'robot or human' in r.text.lower()} next_data={bool(m)}", flush=True)
+    if m:
+        break
+    time.sleep(10)
+if not m:
+    sys.exit("never got the product page")
 data = json.loads(m.group(1))
 paths(data)
 for k in ("conditionGroupCode", "conditionCode", "variantCriteria", "allOffers", "conditionGroups"):
