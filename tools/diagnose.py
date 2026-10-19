@@ -28,7 +28,7 @@ for attempt in range(6):
     monitor._browser = attempt
     monitor.new_session()
     r = monitor._session.get(monitor.PRODUCT_URL, timeout=20, headers={"Referer": monitor.HOME_URL})
-    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
+    m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
     print(f"attempt {attempt} {monitor.BROWSERS[attempt % 2]}: HTTP {r.status_code} len={len(r.text)} "
           f"blocked={'robot or human' in r.text.lower()} next_data={bool(m)}", flush=True)
     if m:

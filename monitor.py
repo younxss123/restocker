@@ -76,7 +76,7 @@ def parse(html):
     low = html.lower()
     if "robot or human" in low or "px-captcha" in low or "/blocked?" in low:
         return "blocked", "bot check page"
-    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+    m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
     if not m:
         return "unknown", "no __NEXT_DATA__ on page"
     data = json.loads(m.group(1))
