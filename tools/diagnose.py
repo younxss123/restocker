@@ -35,7 +35,12 @@ for attempt in range(6):
         break
     time.sleep(10)
 if not m:
-    sys.exit("never got the product page")
+    t = r.text
+    for i in [x.start() for x in re.finditer("__NEXT_DATA__", t)][:3]:
+        print("NEXT_DATA context:", repr(t[max(0, i - 200):i + 200]))
+    for i in [x.start() for x in re.finditer("availabilityStatus", t)][:15]:
+        print("avail context:", repr(t[max(0, i - 300):i + 80]))
+    sys.exit("never parsed the product page")
 data = json.loads(m.group(1))
 paths(data)
 for k in ("conditionGroupCode", "conditionCode", "variantCriteria", "allOffers", "conditionGroups"):
