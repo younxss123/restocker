@@ -25,10 +25,11 @@ jobs:
           path: state.txt
           key: stock-state-${{ github.run_id }}
           restore-keys: stock-state-
-      - name: Check every 30s for ~5 minutes
+      - name: Check every 20s for ~5 minutes
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_MENTION: ${{ vars.DISCORD_MENTION }}
+          CHECK_INTERVAL: "20"
           RUN_FOR: "270"
           STATE_FILE: state.txt
         run: python monitor.py

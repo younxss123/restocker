@@ -5,7 +5,7 @@ the moment the **New** offer goes from out of stock to in stock. Open Box is ign
 
 ## Running on GitHub Actions (current setup)
 The workflow in `.github/workflows/monitor.yml` starts every 5 minutes (GitHub often starts it late)
-and checks every 30 seconds for about 5 minutes each run. It needs the repo secret
+and checks every 20 seconds for about 5 minutes each run. It needs the repo secret
 `DISCORD_WEBHOOK_URL`. Optional: add a repo variable `DISCORD_MENTION` (e.g. `@everyone`) to get pinged.
 Run it by hand from the Actions tab > PS5 Pro restock monitor > Run workflow.
 
