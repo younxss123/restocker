@@ -4,9 +4,10 @@ Checks the Walmart Business PS5 Pro page about every 30 seconds and posts to Dis
 the moment the **New** offer goes from out of stock to in stock. Open Box is ignored.
 
 ## Running on GitHub Actions (current setup)
-The workflow in `.github/workflows/monitor.yml` starts every 5 minutes (GitHub often starts it late)
-and checks every 20 seconds for about 5 minutes each run. It needs the repo secret
-`DISCORD_WEBHOOK_URL`. Optional: add a repo variable `DISCORD_MENTION` (e.g. `@everyone`) to get pinged.
+The workflow in `.github/workflows/monitor.yml` runs for about 55 minutes at a time, checking every
+20 seconds, and a new run queues every 10 minutes so the next one picks up when the last ends.
+It needs the repo secret `DISCORD_WEBHOOK_URL`. Alerts ping `@everyone`; set a repo variable
+`DISCORD_MENTION` (e.g. `<@YOUR_USER_ID>`) to change that.
 Run it by hand from the Actions tab > PS5 Pro restock monitor > Run workflow.
 
 ## Running on your own computer
