@@ -1,34 +1,36 @@
-"""Try several ways of fetching the product page and report which get past Walmart's bot check."""
+"""Show where the stock status lives in the product page's data, and what the monitor reads from it."""
+import json
+import os
 import re
-import time
-from curl_cffi import requests
+import sys
 
-ITEM = "18235967161"
-URLS = {
-    "business": f"https://business.walmart.com/ip/Sony-PlayStation-5-Pro-Console-PS5-Pro/{ITEM}?conditionCode=1",
-    "www": f"https://www.walmart.com/ip/Sony-PlayStation-5-Pro-Console-PS5-Pro/{ITEM}",
-}
-BROWSERS = ["chrome", "safari", "chrome_android", "safari_ios", "firefox", "edge"]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import monitor
 
 
-def summarize(r):
-    t = r.text
-    blocked = "robot or human" in t.lower() or "px-captcha" in t.lower()
-    has_next = "__NEXT_DATA__" in t
-    avail = sorted(set(re.findall(r'"availabilityStatus":"([A-Z_]+)"', t)))
-    cond = sorted(set(re.findall(r'"condition(?:Type|Name)?":"([^"]{1,30})"', t)))[:8]
-    return f"HTTP {r.status_code} len={len(t)} blocked={blocked} next_data={has_next} avail={avail} cond={cond}"
+def paths(node, path=""):
+    if isinstance(node, dict):
+        if "availabilityStatus" in node:
+            keys = [k for k in node if re.search(r"condition|offer|seller|price|availab|usItemId|name", k, re.I)]
+            brief = {k: node[k] for k in keys if not isinstance(node[k], (dict, list))}
+            print(f"{path}: {json.dumps(brief)[:400]}")
+        for k, v in node.items():
+            paths(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            paths(v, f"{path}[{i}]")
 
 
-for name, url in URLS.items():
-    for b in BROWSERS:
-        try:
-            s = requests.Session(impersonate=b)
-            home = url.split("/ip/")[0] + "/"
-            s.get(home, timeout=20)  # warm up cookies like a real visit
-            time.sleep(2)
-            r = s.get(url, timeout=20, headers={"Referer": home})
-            print(f"{name:9} {b:15} {summarize(r)}", flush=True)
-        except Exception as e:
-            print(f"{name:9} {b:15} error {e}", flush=True)
-        time.sleep(3)
+monitor.new_session()
+r = monitor._session.get(monitor.PRODUCT_URL, timeout=20, headers={"Referer": monitor.HOME_URL})
+m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
+data = json.loads(m.group(1))
+paths(data)
+for k in ("conditionGroupCode", "conditionCode", "variantCriteria", "allOffers", "conditionGroups"):
+    for d in monitor.walk(data):
+        if k in d:
+            print(k, "=>", json.dumps(d[k])[:600])
+            break
+print("monitor.parse:", monitor.parse(r.text))
+for _ in range(3):
+    print("monitor.fetch:", monitor.fetch(), flush=True)

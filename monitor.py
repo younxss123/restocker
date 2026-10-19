@@ -21,12 +21,11 @@ import sys
 import time
 from datetime import datetime
 
-try:  # curl_cffi mimics a real Chrome TLS fingerprint, which Walmart's bot check cares about
-    from curl_cffi import requests as http
-    IMPERSONATE = {"impersonate": "chrome"}
-except ImportError:
-    import requests as http
-    IMPERSONATE = {}
+# curl_cffi mimics a real browser's TLS fingerprint. Walmart's bot check lets the
+# mobile browser profiles through from cloud servers but blocks desktop ones.
+from curl_cffi import requests as http
+
+BROWSERS = ["chrome_android", "safari_ios"]
 
 PRODUCT_URL = os.environ.get(
     "PRODUCT_URL",
@@ -38,12 +37,7 @@ INTERVAL = int(os.environ.get("CHECK_INTERVAL", "30"))
 MENTION = os.environ.get("DISCORD_MENTION", "")
 RUN_FOR = int(os.environ.get("RUN_FOR", "0"))  # stop after N seconds (0 = forever), for scheduled runs
 STATE_FILE = os.environ.get("STATE_FILE", "")  # remembers last status between scheduled runs
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
+HOME_URL = PRODUCT_URL.split("/ip/")[0] + "/"
 IN_STOCK = {"IN_STOCK", "AVAILABLE", "LIMITED_STOCK"}
 
 
@@ -107,13 +101,33 @@ def parse(html):
     return "unknown", "availabilityStatus not found"
 
 
+_session = None
+_browser = 0
+
+
+def new_session():
+    """Start a fresh browser-like session, visiting the home page first for cookies."""
+    global _session
+    _session = http.Session(impersonate=BROWSERS[_browser % len(BROWSERS)])
+    _session.get(HOME_URL, timeout=20)
+    time.sleep(2)
+
+
 def fetch():
+    global _browser
+    if _session is None:
+        new_session()
     sep = "&" if "?" in PRODUCT_URL else "?"
     url = f"{PRODUCT_URL}{sep}_={int(time.time())}"  # cache buster
-    r = http.get(url, headers=HEADERS, timeout=20, **IMPERSONATE)
+    r = _session.get(url, timeout=20, headers={"Referer": HOME_URL})
     if r.status_code in (403, 429) or r.status_code >= 500:
-        return "blocked", f"HTTP {r.status_code}"
-    return parse(r.text)
+        result = "blocked", f"HTTP {r.status_code}"
+    else:
+        result = parse(r.text)
+    if result[0] == "blocked":  # switch browser profile and start over next time
+        _browser += 1
+        new_session()
+    return result
 
 
 def notify(text):
