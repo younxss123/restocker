@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Walmart Business restock monitor for the PS5 Pro (New condition only).
+
+Polls the product page, reads the "New" offer's availability from the page's
+embedded __NEXT_DATA__ JSON, and posts to a Discord webhook when it flips from
+out of stock to in stock. Open Box and other conditions are ignored.
+
+Env vars:
+  DISCORD_WEBHOOK_URL  required, the Discord channel webhook
+  CHECK_INTERVAL       seconds between checks (default 30)
+  PRODUCT_URL          override the page to watch
+  DISCORD_MENTION      optional text prepended to alerts, e.g. "@everyone" or "<@USER_ID>"
+  RUN_FOR              stop after this many seconds (default 0 = run forever)
+  STATE_FILE           file that remembers the last status between runs
+"""
+import json
+import os
+import random
+import re
+import sys
+import time
+from datetime import datetime
+
+try:  # curl_cffi mimics a real Chrome TLS fingerprint, which Walmart's bot check cares about
+    from curl_cffi import requests as http
+    IMPERSONATE = {"impersonate": "chrome"}
+except ImportError:
+    import requests as http
+    IMPERSONATE = {}
+
+PRODUCT_URL = os.environ.get(
+    "PRODUCT_URL",
+    "https://business.walmart.com/ip/Sony-PlayStation-5-Pro-Console-PS5-Pro/18235967161"
+    "?classType=REGULAR&conditionCode=1&conditionGroupCode=1",
+)
+WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
+INTERVAL = int(os.environ.get("CHECK_INTERVAL", "30"))
+MENTION = os.environ.get("DISCORD_MENTION", "")
+RUN_FOR = int(os.environ.get("RUN_FOR", "0"))  # stop after N seconds (0 = forever), for scheduled runs
+STATE_FILE = os.environ.get("STATE_FILE", "")  # remembers last status between scheduled runs
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+IN_STOCK = {"IN_STOCK", "AVAILABLE", "LIMITED_STOCK"}
+
+
+def log(msg):
+    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
+
+
+def walk(node):
+    if isinstance(node, dict):
+        yield node
+        for v in node.values():
+            yield from walk(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from walk(v)
+
+
+def condition_of(d):
+    """Return the condition label of an offer-like dict, if it has one."""
+    for key in ("conditionType", "condition", "conditionName", "conditionGroup", "itemCondition"):
+        v = d.get(key)
+        if isinstance(v, dict):
+            v = v.get("name") or v.get("type") or v.get("displayName") or v.get("code")
+        if isinstance(v, (str, int)):
+            return str(v)
+    return None
+
+
+def is_new(cond):
+    c = cond.strip().upper().replace(" ", "_")
+    return c in {"NEW", "1", "NEWCONDITION"} or c.endswith("NEWCONDITION")
+
+
+def parse(html):
+    """Return (status, detail). status is 'in', 'out', 'blocked' or 'unknown'."""
+    low = html.lower()
+    if "robot or human" in low or "px-captcha" in low or "/blocked?" in low:
+        return "blocked", "bot check page"
+    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+    if not m:
+        return "unknown", "no __NEXT_DATA__ on page"
+    data = json.loads(m.group(1))
+
+    # 1) Any offer explicitly labelled New wins (skips Open Box, Refurbished, etc).
+    for d in walk(data):
+        cond = condition_of(d)
+        if cond and is_new(cond) and "availabilityStatus" in d:
+            st = str(d["availabilityStatus"]).upper()
+            return ("in" if st in IN_STOCK else "out"), f"New offer: {st}"
+
+    # 2) Otherwise the page's main product. The URL pins conditionCode=1 (New),
+    #    so the selected offer is the New one.
+    product = (data.get("props", {}).get("pageProps", {})
+               .get("initialData", {}).get("data", {}).get("product"))
+    if isinstance(product, dict) and "availabilityStatus" in product:
+        cond = condition_of(product)
+        if cond and not is_new(cond):
+            return "unknown", f"main product condition is {cond}, not New"
+        st = str(product["availabilityStatus"]).upper()
+        return ("in" if st in IN_STOCK else "out"), f"product: {st}"
+    return "unknown", "availabilityStatus not found"
+
+
+def fetch():
+    sep = "&" if "?" in PRODUCT_URL else "?"
+    url = f"{PRODUCT_URL}{sep}_={int(time.time())}"  # cache buster
+    r = http.get(url, headers=HEADERS, timeout=20, **IMPERSONATE)
+    if r.status_code in (403, 429) or r.status_code >= 500:
+        return "blocked", f"HTTP {r.status_code}"
+    return parse(r.text)
+
+
+def notify(text):
+    if not WEBHOOK:
+        log("DISCORD_WEBHOOK_URL not set, would have sent: " + text)
+        return
+    payload = {
+        "content": f"{MENTION} {text}".strip(),
+        "allowed_mentions": {"parse": ["everyone", "users", "roles"]},
+    }
+    for attempt in range(3):
+        try:
+            r = http.post(WEBHOOK, json=payload, timeout=15)
+            if r.status_code < 300:
+                return
+            log(f"Discord returned {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            log(f"Discord error: {e}")
+        time.sleep(2 ** attempt)
+
+
+def main():
+    if "--test-discord" in sys.argv:
+        notify("Restock monitor test message: Discord alerts are working.")
+        return
+    if "--once" in sys.argv:
+        print(fetch())
+        return
+    log(f"Watching {PRODUCT_URL} every ~{INTERVAL}s")
+    last = None
+    if STATE_FILE and os.path.exists(STATE_FILE):
+        last = open(STATE_FILE).read().strip() or None
+    blocked_streak = 0
+    deadline = time.time() + RUN_FOR if RUN_FOR else None
+    while deadline is None or time.time() < deadline:
+        try:
+            status, detail = fetch()
+        except Exception as e:
+            status, detail = "unknown", f"error: {e}"
+        log(f"{status}: {detail}")
+        if status == "in" and last != "in":
+            notify(f"🚨 **PS5 Pro (New) is BACK IN STOCK** on Walmart Business!\n{PRODUCT_URL}")
+        if status in ("in", "out"):
+            last = status
+            if STATE_FILE:
+                with open(STATE_FILE, "w") as f:
+                    f.write(status)
+            blocked_streak = 0
+        elif status == "blocked":
+            blocked_streak += 1
+            if blocked_streak == 20:
+                notify("⚠️ Restock monitor: Walmart has blocked the last 20 checks. Alerts may be missed.")
+        # back off when blocked, jitter so requests don't look robotic
+        wait = INTERVAL * (min(blocked_streak, 6) + 1) if status == "blocked" else INTERVAL
+        time.sleep(wait + random.uniform(0, INTERVAL * 0.3))
+
+
+if __name__ == "__main__":
+    main()

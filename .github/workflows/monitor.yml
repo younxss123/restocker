@@ -1,0 +1,40 @@
+name: PS5 Pro restock monitor
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # GitHub's minimum; runs often start late
+  workflow_dispatch:
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Restore last status
+        uses: actions/cache/restore@v4
+        with:
+          path: state.txt
+          key: stock-state-${{ github.run_id }}
+          restore-keys: stock-state-
+      - name: Check every 30s for ~5 minutes
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_MENTION: ${{ vars.DISCORD_MENTION }}
+          RUN_FOR: "270"
+          STATE_FILE: state.txt
+        run: python monitor.py
+      - name: Save last status
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.txt
+          key: stock-state-${{ github.run_id }}
