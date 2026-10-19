@@ -55,20 +55,11 @@ def walk(node):
             yield from walk(v)
 
 
-def condition_of(d):
-    """Return the condition label of an offer-like dict, if it has one."""
-    for key in ("conditionType", "condition", "conditionName", "conditionGroup", "itemCondition"):
-        v = d.get(key)
-        if isinstance(v, dict):
-            v = v.get("name") or v.get("type") or v.get("displayName") or v.get("code")
-        if isinstance(v, (str, int)):
-            return str(v)
-    return None
-
-
-def is_new(cond):
-    c = cond.strip().upper().replace(" ", "_")
-    return c in {"NEW", "1", "NEWCONDITION"} or c.endswith("NEWCONDITION")
+def status_value(v):
+    """availabilityStatus is either "IN_STOCK" or {"display": "In stock", "value": "IN_STOCK"}."""
+    if isinstance(v, dict):
+        v = v.get("value")
+    return str(v).upper() if v else None
 
 
 def parse(html):
@@ -76,28 +67,30 @@ def parse(html):
     low = html.lower()
     if "robot or human" in low or "px-captcha" in low or "/blocked?" in low:
         return "blocked", "bot check page"
-    m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+    m = re.search(r'<script[^>]*id=["\']?__NEXT_DATA__["\']?[^>]*>(.*?)</script>', html, re.S)
     if not m:
         return "unknown", "no __NEXT_DATA__ on page"
     data = json.loads(m.group(1))
 
-    # 1) Any offer explicitly labelled New wins (skips Open Box, Refurbished, etc).
-    for d in walk(data):
-        cond = condition_of(d)
-        if cond and is_new(cond) and "availabilityStatus" in d:
-            st = str(d["availabilityStatus"]).upper()
-            return ("in" if st in IN_STOCK else "out"), f"New offer: {st}"
+    # The product's offers by condition look like
+    #   "conditionOffers": [{"isConditionNew": true, "availabilityStatus": {"value": "OUT_OF_STOCK"}, ...},
+    #                       {"isConditionNew": false, ...Open Box...}]
+    # Only the New ones count.
+    new_statuses = [status_value(d.get("availabilityStatus")) for d in walk(data)
+                    if d.get("isConditionNew") is True and "availabilityStatus" in d and "offerId" in d]
+    new_statuses = [st for st in new_statuses if st]
+    if new_statuses:
+        st = next((x for x in new_statuses if x in IN_STOCK), new_statuses[0])
+        return ("in" if st in IN_STOCK else "out"), f"New offer: {st}"
 
-    # 2) Otherwise the page's main product. The URL pins conditionCode=1 (New),
-    #    so the selected offer is the New one.
+    # Fallback: the page's main product. The URL pins conditionCode=1 (New),
+    # so the selected offer is the New one.
     product = (data.get("props", {}).get("pageProps", {})
                .get("initialData", {}).get("data", {}).get("product"))
-    if isinstance(product, dict) and "availabilityStatus" in product:
-        cond = condition_of(product)
-        if cond and not is_new(cond):
-            return "unknown", f"main product condition is {cond}, not New"
-        st = str(product["availabilityStatus"]).upper()
-        return ("in" if st in IN_STOCK else "out"), f"product: {st}"
+    if isinstance(product, dict) and product.get("isConditionNew") is not False:
+        st = status_value(product.get("availabilityStatus"))
+        if st:
+            return ("in" if st in IN_STOCK else "out"), f"product: {st}"
     return "unknown", "availabilityStatus not found"
 
 
