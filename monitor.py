@@ -154,6 +154,7 @@ def main():
     if STATE_FILE and os.path.exists(STATE_FILE):
         last = open(STATE_FILE).read().strip() or None
     blocked_streak = 0
+    trouble_streak = 0  # checks in a row that couldn't read the stock status
     deadline = time.time() + RUN_FOR if RUN_FOR else None
     while deadline is None or time.time() < deadline:
         try:
@@ -168,11 +169,16 @@ def main():
             if STATE_FILE:
                 with open(STATE_FILE, "w") as f:
                     f.write(status)
-            blocked_streak = 0
-        elif status == "blocked":
-            blocked_streak += 1
-            if blocked_streak == 20:
-                notify("⚠️ Restock monitor: Walmart has blocked the last 20 checks. Alerts may be missed.")
+            if trouble_streak >= 20:
+                notify("✅ Restock monitor: reading the page normally again.")
+            blocked_streak = trouble_streak = 0
+        else:
+            trouble_streak += 1
+            if status == "blocked":
+                blocked_streak += 1
+            if trouble_streak == 20:
+                notify(f"⚠️ Restock monitor: the last 20 checks couldn't read the stock status "
+                       f"({detail}). Alerts may be missed until this clears.")
         # back off when blocked, jitter so requests don't look robotic
         wait = INTERVAL * (min(blocked_streak, 6) + 1) if status == "blocked" else INTERVAL
         time.sleep(wait + random.uniform(0, INTERVAL * 0.3))
