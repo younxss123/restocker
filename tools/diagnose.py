@@ -48,6 +48,24 @@ for k in ("conditionGroupCode", "conditionCode", "variantCriteria", "allOffers",
         if k in d:
             print(k, "=>", json.dumps(d[k])[:600])
             break
+product = data["props"]["pageProps"]["initialData"]["data"]["product"]
+for i, offer in enumerate(product.get("conditionOffers") or []):
+    print(f"conditionOffers[{i}] =>", json.dumps(offer)[:2500])
+print("product.priceInfo =>", json.dumps(product.get("priceInfo"))[:2500])
+
+
+def price_paths(node, path=""):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if re.search(r"price", k, re.I) and not isinstance(v, (dict, list)) and v is not None:
+                print(f"price field {path}.{k} = {v!r}")
+            price_paths(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            price_paths(v, f"{path}[{i}]")
+
+
+price_paths(product, "product")
 print("monitor.parse:", monitor.parse(r.text))
 for _ in range(3):
     print("monitor.fetch:", monitor.fetch(), flush=True)
