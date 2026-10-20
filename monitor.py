@@ -190,9 +190,18 @@ def notify(text):
         time.sleep(2 ** attempt)
 
 
+def alert_text(detail):
+    return (f"🚨 **PS5 Pro (New) is IN STOCK under {money(MAX_PRICE)}** on Walmart Business! "
+            f"({detail})\n{PRODUCT_URL}")
+
+
 def main():
     if "--test-discord" in sys.argv:
         notify("Restock monitor test message: Discord alerts are working.")
+        return
+    if "--demo-alert" in sys.argv:
+        notify("🧪 **TEST, not a real restock.** This is what a restock alert looks like:\n"
+               + alert_text("New: IN_STOCK at $899.00"))
         return
     if "--once" in sys.argv:
         print(fetch())
@@ -211,8 +220,7 @@ def main():
             status, detail = "unknown", f"error: {e}"
         log(f"{status}: {detail}")
         if status == "in" and last != "in":
-            notify(f"🚨 **PS5 Pro (New) is IN STOCK under {money(MAX_PRICE)}** on Walmart Business! "
-                   f"({detail})\n{PRODUCT_URL}")
+            notify(alert_text(detail))
         if status in ("in", "out"):
             last = status
             if STATE_FILE:

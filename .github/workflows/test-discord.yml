@@ -1,4 +1,4 @@
-name: Send test Discord notification
+name: Send test Discord alert
 
 on:
   workflow_dispatch:
@@ -14,5 +14,5 @@ jobs:
       - run: pip install -r requirements.txt
       - env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DISCORD_MENTION: ${{ vars.DISCORD_MENTION }}
-        run: python monitor.py --test-discord
+          DISCORD_MENTION: ${{ vars.DISCORD_MENTION || '@everyone' }}
+        run: python monitor.py --demo-alert
