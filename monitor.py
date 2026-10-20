@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Walmart Business restock monitor for the PS5 Pro (New condition only).
 
-Polls the product page, reads the "New" offer's availability from the page's
-embedded __NEXT_DATA__ JSON, and posts to a Discord webhook when it flips from
-out of stock to in stock. Open Box and other conditions are ignored.
+Polls the product page, reads the "New" offer's availability and price from the
+page's embedded __NEXT_DATA__ JSON, and posts to a Discord webhook when it becomes
+in stock under MAX_PRICE. Open Box and other conditions are ignored, and so is a
+New listing priced at MAX_PRICE or more (e.g. a reseller at $1,644.99).
 
 Env vars:
   DISCORD_WEBHOOK_URL  required, the Discord channel webhook
@@ -12,6 +13,7 @@ Env vars:
   DISCORD_MENTION      optional text prepended to alerts, e.g. "@everyone" or "<@USER_ID>"
   RUN_FOR              stop after this many seconds (default 0 = run forever)
   STATE_FILE           file that remembers the last status between runs
+  MAX_PRICE            only alert when the New price is below this (default 1000)
 """
 import json
 import os
@@ -38,6 +40,11 @@ MENTION = os.environ.get("DISCORD_MENTION", "")
 RUN_FOR = int(os.environ.get("RUN_FOR", "0"))  # stop after N seconds (0 = forever), for scheduled runs
 STATE_FILE = os.environ.get("STATE_FILE", "")  # remembers last status between scheduled runs
 HOME_URL = PRODUCT_URL.split("/ip/")[0] + "/"
+# Accept "1000", "$1,000" or "999.99"; anything else falls back to 1000 rather than crashing.
+try:
+    MAX_PRICE = float(re.sub(r"[$,\s]", "", os.environ.get("MAX_PRICE", "")) or 1000)
+except ValueError:
+    MAX_PRICE = 1000.0
 IN_STOCK = {"IN_STOCK", "AVAILABLE", "LIMITED_STOCK"}
 
 
@@ -62,6 +69,35 @@ def status_value(v):
     return str(v).upper() if v else None
 
 
+def price_value(v):
+    """Prices look like {"price": 1644.99, "priceString": "$1,644.99"}."""
+    if isinstance(v, dict):
+        v = v.get("price")
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def money(x):
+    return f"${x:,.0f}" if x == int(x) else f"${x:,.2f}"
+
+
+def judge(st, price):
+    """Turn a New offer's stock status and price into (status, detail).
+
+    'in' means in stock AND under MAX_PRICE, which is the only thing worth an alert.
+    A missing price still counts as 'in' so a real restock is never skipped.
+    """
+    if st not in IN_STOCK:
+        return "out", f"New: {st}"
+    if price is None:
+        return "in", "New: IN_STOCK, price not shown"
+    if price < MAX_PRICE:
+        return "in", f"New: IN_STOCK at ${price:,.2f}"
+    return "out", f"New: IN_STOCK at ${price:,.2f}, not under {money(MAX_PRICE)}"
+
+
 def parse(html):
     """Return (status, detail). status is 'in', 'out', 'blocked' or 'unknown'."""
     low = html.lower()
@@ -71,26 +107,38 @@ def parse(html):
     if not m:
         return "unknown", "no __NEXT_DATA__ on page"
     data = json.loads(m.group(1))
-
-    # The product's offers by condition look like
-    #   "conditionOffers": [{"isConditionNew": true, "availabilityStatus": {"value": "OUT_OF_STOCK"}, ...},
-    #                       {"isConditionNew": false, ...Open Box...}]
-    # Only the New ones count.
-    new_statuses = [status_value(d.get("availabilityStatus")) for d in walk(data)
-                    if d.get("isConditionNew") is True and "availabilityStatus" in d and "offerId" in d]
-    new_statuses = [st for st in new_statuses if st]
-    if new_statuses:
-        st = next((x for x in new_statuses if x in IN_STOCK), new_statuses[0])
-        return ("in" if st in IN_STOCK else "out"), f"New offer: {st}"
-
-    # Fallback: the page's main product. The URL pins conditionCode=1 (New),
-    # so the selected offer is the New one.
     product = (data.get("props", {}).get("pageProps", {})
                .get("initialData", {}).get("data", {}).get("product"))
-    if isinstance(product, dict) and product.get("isConditionNew") is not False:
+    product = product if isinstance(product, dict) else {}
+    page_price = price_value((product.get("priceInfo") or {}).get("currentPrice"))
+
+    # The product's offers by condition look like
+    #   "conditionOffers": [{"isConditionNew": true, "availabilityStatus": {"value": "IN_STOCK"},
+    #                        "price": {"price": 1644.99}, ...},
+    #                       {"isConditionNew": false, ...Open Box...}]
+    # Only the New ones count.
+    new_offers = [d for d in walk(data)
+                  if d.get("isConditionNew") is True and "availabilityStatus" in d and "offerId" in d]
+    results = []
+    for d in new_offers:
+        st = status_value(d.get("availabilityStatus"))
+        if not st:
+            continue
+        price = price_value(d.get("price"))
+        if price is None and d.get("offerId") == product.get("selectedOfferId"):
+            price = page_price  # the page's headline price belongs to the selected offer
+        results.append(judge(st, price))
+    if results:
+        # Any qualifying New offer wins; otherwise report the first one.
+        return next((r for r in results if r[0] == "in"), results[0])
+
+    # Fallback: the page's main product. The URL pins conditionCode=1 (New),
+    # so the selected offer should be the New one; skip it if it's a known non-New offer.
+    not_new_ids = {d.get("offerId") for d in walk(data) if d.get("isConditionNew") is False}
+    if product.get("isConditionNew") is not False and product.get("selectedOfferId") not in not_new_ids - {None}:
         st = status_value(product.get("availabilityStatus"))
         if st:
-            return ("in" if st in IN_STOCK else "out"), f"product: {st}"
+            return judge(st, page_price)
     return "unknown", "availabilityStatus not found"
 
 
@@ -163,7 +211,8 @@ def main():
             status, detail = "unknown", f"error: {e}"
         log(f"{status}: {detail}")
         if status == "in" and last != "in":
-            notify(f"🚨 **PS5 Pro (New) is BACK IN STOCK** on Walmart Business!\n{PRODUCT_URL}")
+            notify(f"🚨 **PS5 Pro (New) is IN STOCK under {money(MAX_PRICE)}** on Walmart Business! "
+                   f"({detail})\n{PRODUCT_URL}")
         if status in ("in", "out"):
             last = status
             if STATE_FILE:
