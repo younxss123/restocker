@@ -74,6 +74,7 @@ def alerts(seq, last=None):
         return seq.pop(0)
 
     sent = []
+    monitor.XBOX_URL = ""  # PS5 only here; both products together are tested below
     monitor.fetch, monitor.notify, monitor.log = fake_fetch, sent.append, lambda m: None
     monitor.time.sleep = lambda s: None
     try:
@@ -106,4 +107,77 @@ for raw, want in [("$1,000", 1000.0), ("999.99", 999.99), ("", 1000.0), ("abc", 
     print(f"{'ok  ' if ok else 'FAIL'} MAX_PRICE={raw!r} -> {out}")
 msgs = alerts([over, under])
 print("sample alert:", msgs[-1].splitlines()[0])
+
+
+def xbox_page(ld_availability, button_disabled, cta, action_text="Build your device", price=899.99,
+              release="2026-11-13T05:00:00.0000000Z"):
+    """Shaped like the live Microsoft Store page (captured 2026-10-21: OutOfStock, button off)."""
+    ld = {"@context": "https://schema.org", "@type": "Product", "name": "XBOX Series X25 Limited Edition",
+          "offers": {"@type": "AggregateOffer", "priceCurrency": "USD", "lowPrice": price,
+                     "offers": [{"availability": f"https://schema.org/{ld_availability}", "price": price}]}}
+    box = {"product": {"productId": "8wg5vqp0x4h3", "skuOrder": {"0": ["JXZJ"]}, "skuInfo": {"JXZJ": {
+        "skuId": "JXZJ", "price": {"current": f"${price:,.2f}"}, "ctaDescription": cta,
+        "releaseMessageDateValue": release,
+        "action": {"action": "ConfigureDevice", "actionText": action_text, "disabled": button_disabled}}}}}
+    # The live page also has a static marketing "Pre-order now" button, which must not count.
+    return (f'<script type="application/ld+json">{json.dumps(ld)}</script>'
+            '<a data-bi-cn="Pre-order now" aria-label="Pre-order now">Pre-order now</a>'
+            f'<script>window.__BuyBox__={json.dumps(box)};</script>')
+
+
+xbox_cases = [
+    ("xbox live page today: out of stock", xbox_page("OutOfStock", True, "Out of stock"), "out", "Out of stock"),
+    ("xbox pre-order opens", xbox_page("PreOrder", False, None, "Pre-order"), "in", "Pre-order open"),
+    ("xbox restock after release", xbox_page("InStock", False, None, "Add to cart", release="2000-01-01"),
+     "in", "In stock"),
+    ("xbox buyable before release is a pre-order", xbox_page("InStock", False, None), "in", "Pre-order open"),
+    ("xbox button on, schema still says out", xbox_page("OutOfStock", False, None, "Pre-order"), "in", "Pre-order"),
+    ("xbox schema says pre-order, button data missing",
+     xbox_page("PreOrder", True, None).split("<script>window")[0], "in", "Pre-order open"),
+    ("xbox nothing readable", "<html>hi</html>", "unknown", ""),
+    ("xbox Access Denied", "<html><title>Access Denied</title></html>", "blocked", ""),
+]
+for name, html, want, prefix in xbox_cases:
+    got = monitor.xbox_parse(html)
+    ok = got[0] == want and got[1].startswith(prefix)
+    failed += not ok
+    print(f"{'ok  ' if ok else 'FAIL'} {name}: {got}")
+
+
+def both(ps5_seq, xbox_seq, run_for=1000):
+    """Run main() with both products on a fake clock; returns (messages, checks done per product)."""
+    ps5_seq, xbox_seq, sent, clock = list(ps5_seq), list(xbox_seq), [], [0.0]
+    counts = {"ps5": 0, "xbox": 0}
+
+    def take(seq, key):
+        counts[key] += 1
+        return seq.pop(0) if seq else ("out", "x")
+
+    def sleep(s):
+        clock[0] += max(s, 0)
+    monitor.XBOX_URL, monitor.RUN_FOR, monitor.STATE_FILE, monitor.XBOX_STATE_FILE = "https://x", run_for, "", ""
+    monitor.INTERVAL = 15
+    monitor.fetch, monitor.xbox_fetch = lambda: take(ps5_seq, "ps5"), lambda: take(xbox_seq, "xbox")
+    monitor.notify, monitor.log = sent.append, lambda m: None
+    monitor.time.sleep, monitor.time.time = sleep, lambda: clock[0]
+    monitor.main()
+    return sent, counts
+
+
+pre = ("in", 'Pre-order open: $899.99, button says "Pre-order"')
+sent, counts = both([over, under, under], [("out", "Out of stock"), pre, pre])
+names = sorted(m.split("**")[1] for m in sent)
+ok = (len(names) == 2 and names[0].startswith("PS5 Pro") and "Xbox Series X25" in names[1]
+      and "PRE-ORDERS ARE OPEN" in names[1] and abs(counts["ps5"] - counts["xbox"]) <= 6 and counts["ps5"] > 50)
+failed += not ok
+print(f"{'ok  ' if ok else 'FAIL'} both products alert once each, labelled: {names} checks={counts}")
+blocked = ("blocked", "HTTP 403")
+sent, counts = both([blocked] * 100, [], run_for=3000)
+ok = counts["xbox"] > 50 and counts["ps5"] < counts["xbox"] / 2
+failed += not ok
+print(f"{'ok  ' if ok else 'FAIL'} PS5 blocked backoff doesn't slow the Xbox: checks={counts}")
+ok = any(m.startswith("⚠️ PS5 Pro") for m in sent) and not any("Xbox" in m for m in sent)
+failed += not ok
+print(f"{'ok  ' if ok else 'FAIL'} trouble warning names the product")
+print("sample xbox alert:", monitor.xbox_alert_text(pre[1]).splitlines()[0])
 sys.exit(1 if failed else 0)

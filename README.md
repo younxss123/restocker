@@ -1,8 +1,13 @@
-# PS5 Pro restock monitor (Walmart Business, New only)
+# Restock monitor: PS5 Pro (Walmart Business) + Xbox Series X25 (Microsoft Store)
 
-Checks the Walmart Business PS5 Pro page about every 15 seconds and posts to Discord
-the moment the **New** offer is in stock for under $1,000. Open Box is ignored, and so is a New
-listing at $1,000 or more (for example a reseller at $1,644.99).
+Checks two pages, each about every 15 seconds, and posts to Discord:
+
+- **PS5 Pro** on Walmart Business: the moment the **New** offer is in stock for under $1,000.
+  Open Box is ignored, and so is a New listing at $1,000 or more (for example a reseller at $1,644.99).
+- **Xbox Series X25 Limited Edition** on the Microsoft Store: the moment it can be bought at any price,
+  whether pre-orders open or it restocks. The alert says which one it is.
+
+Each alert names its product. The two are tracked separately, so a block on one store doesn't slow the other.
 
 ## Running on GitHub Actions (current setup)
 The workflow in `.github/workflows/monitor.yml` checks every 15 seconds for about 55 minutes,
@@ -11,8 +16,8 @@ restarts it if that chain ever breaks. It needs the repo secret `DISCORD_WEBHOOK
 Alerts ping `@everyone`; set a repo variable `DISCORD_MENTION` (e.g. `<@YOUR_USER_ID>`) to change that.
 To change the price limit, set a repo variable `MAX_PRICE` (default `1000`).
 
-To stop it: Actions tab > PS5 Pro restock monitor > "..." menu > Disable workflow.
-Run it by hand from the Actions tab > PS5 Pro restock monitor > Run workflow.
+To stop it: Actions tab > Restock monitor (PS5 Pro + Xbox X25) > "..." menu > Disable workflow.
+Run it by hand from the Actions tab > Restock monitor (PS5 Pro + Xbox X25) > Run workflow.
 
 ## Running on your own computer
 1. In Discord: Server Settings > Integrations > Webhooks > New Webhook, pick a channel, Copy Webhook URL.
@@ -23,12 +28,14 @@ Run it by hand from the Actions tab > PS5 Pro restock monitor > Run workflow.
 
 ## Handy commands
 - `python3 monitor.py --test-discord` sends a test message to your channel.
-- `python3 monitor.py --once` does one check and prints what it saw (`out`, `in`, `blocked` or `unknown`).
+- `python3 monitor.py --once` does one check of each page and prints what it saw (`out`, `in`, `blocked` or `unknown`).
+- `python3 monitor.py --demo-alert xbox` sends a sample Xbox alert marked as a test (leave off `xbox` for the PS5 one).
 
 ## Options (env vars)
 - `CHECK_INTERVAL` seconds between checks, default 30. Going much lower raises the chance Walmart blocks you.
 - `DISCORD_MENTION` e.g. `@everyone` or `<@YOUR_USER_ID>` so the alert pings your phone.
-- `PRODUCT_URL` watch a different page.
+- `PRODUCT_URL` watch a different Walmart page.
+- `XBOX_URL` watch a different Microsoft Store page; set it to an empty value to stop watching the Xbox.
 - `MAX_PRICE` only alert when the New price is below this, default 1000.
 
 ## Where to run it

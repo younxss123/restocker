@@ -1,4 +1,4 @@
-name: PS5 Pro restock monitor
+name: Restock monitor (PS5 Pro + Xbox X25)
 
 on:
   # Each run watches for ~55 minutes, then starts the next run itself (last step),
@@ -37,6 +37,13 @@ jobs:
           # v2: "in" now means in stock AND under MAX_PRICE, so old saved statuses don't carry over
           key: stock-state-v2-${{ github.run_id }}
           restore-keys: stock-state-v2-
+      - name: Restore last Xbox status
+        # Kept in its own cache so the PS5 status above carries over untouched.
+        uses: actions/cache/restore@v4
+        with:
+          path: xbox_state.txt
+          key: xbox-state-v1-${{ github.run_id }}
+          restore-keys: xbox-state-v1-
       - name: Check every 15s for ~55 minutes
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -45,6 +52,7 @@ jobs:
           MAX_PRICE: ${{ vars.MAX_PRICE || '1000' }}
           RUN_FOR: ${{ inputs.run_for || '3300' }}
           STATE_FILE: state.txt
+          XBOX_STATE_FILE: xbox_state.txt
         run: python monitor.py
       - name: Save last status
         if: always()
@@ -52,6 +60,12 @@ jobs:
         with:
           path: state.txt
           key: stock-state-v2-${{ github.run_id }}
+      - name: Save last Xbox status
+        if: always() && hashFiles('xbox_state.txt') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: xbox_state.txt
+          key: xbox-state-v1-${{ github.run_id }}
       - name: Start the next run
         # Skipped when you cancel a run by hand, so cancelling stops the chain.
         if: ${{ !cancelled() }}
