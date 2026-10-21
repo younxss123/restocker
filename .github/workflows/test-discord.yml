@@ -2,6 +2,12 @@ name: Send test Discord alert
 
 on:
   workflow_dispatch:
+    inputs:
+      product:
+        description: "Which product's alert to show"
+        type: choice
+        options: [ps5, xbox]
+        default: ps5
 
 jobs:
   test:
@@ -15,4 +21,4 @@ jobs:
       - env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_MENTION: ${{ vars.DISCORD_MENTION || '@everyone' }}
-        run: python monitor.py --demo-alert
+        run: python monitor.py --demo-alert ${{ inputs.product }}
