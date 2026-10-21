@@ -49,6 +49,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_MENTION: ${{ vars.DISCORD_MENTION || '@everyone' }}
           CHECK_INTERVAL: "15"
+          XBOX_INTERVAL: "60"
           MAX_PRICE: ${{ vars.MAX_PRICE || '1000' }}
           RUN_FOR: ${{ inputs.run_for || '3300' }}
           STATE_FILE: state.txt

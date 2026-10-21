@@ -156,7 +156,7 @@ def both(ps5_seq, xbox_seq, run_for=1000):
     def sleep(s):
         clock[0] += max(s, 0)
     monitor.XBOX_URL, monitor.RUN_FOR, monitor.STATE_FILE, monitor.XBOX_STATE_FILE = "https://x", run_for, "", ""
-    monitor.INTERVAL = 15
+    monitor.INTERVAL, monitor.XBOX_INTERVAL = 15, 60
     monitor.fetch, monitor.xbox_fetch = lambda: take(ps5_seq, "ps5"), lambda: take(xbox_seq, "xbox")
     monitor.notify, monitor.log = sent.append, lambda m: None
     monitor.time.sleep, monitor.time.time = sleep, lambda: clock[0]
@@ -168,12 +168,12 @@ pre = ("in", 'Pre-order open: $899.99, button says "Pre-order"')
 sent, counts = both([over, under, under], [("out", "Out of stock"), pre, pre])
 names = sorted(m.split("**")[1] for m in sent)
 ok = (len(names) == 2 and names[0].startswith("PS5 Pro") and "Xbox Series X25" in names[1]
-      and "PRE-ORDERS ARE OPEN" in names[1] and abs(counts["ps5"] - counts["xbox"]) <= 6 and counts["ps5"] > 50)
+      and "PRE-ORDERS ARE OPEN" in names[1] and 60 <= counts["ps5"] <= 75 and 15 <= counts["xbox"] <= 19)
 failed += not ok
-print(f"{'ok  ' if ok else 'FAIL'} both products alert once each, labelled: {names} checks={counts}")
+print(f"{'ok  ' if ok else 'FAIL'} both alert once each, labelled, PS5 every ~15s and Xbox every ~60s: {names} checks={counts}")
 blocked = ("blocked", "HTTP 403")
 sent, counts = both([blocked] * 100, [], run_for=3000)
-ok = counts["xbox"] > 50 and counts["ps5"] < counts["xbox"] / 2
+ok = 45 <= counts["xbox"] <= 56 and counts["ps5"] < counts["xbox"]
 failed += not ok
 print(f"{'ok  ' if ok else 'FAIL'} PS5 blocked backoff doesn't slow the Xbox: checks={counts}")
 ok = any(m.startswith("⚠️ PS5 Pro") for m in sent) and not any("Xbox" in m for m in sent)
