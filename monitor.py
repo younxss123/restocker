@@ -8,7 +8,7 @@ New listing priced at MAX_PRICE or more (e.g. a reseller at $1,644.99).
 
 Env vars:
   DISCORD_WEBHOOK_URL  required, the Discord channel webhook
-  CHECK_INTERVAL       seconds between checks (default 30)
+  CHECK_INTERVAL       seconds from one check to the next, +/-10% (default 30)
   PRODUCT_URL          override the page to watch
   DISCORD_MENTION      optional text prepended to alerts, e.g. "@everyone" or "<@USER_ID>"
   RUN_FOR              stop after this many seconds (default 0 = run forever)
@@ -214,6 +214,7 @@ def main():
     trouble_streak = 0  # checks in a row that couldn't read the stock status
     deadline = time.time() + RUN_FOR if RUN_FOR else None
     while deadline is None or time.time() < deadline:
+        started = time.time()
         try:
             status, detail = fetch()
         except Exception as e:
@@ -236,9 +237,10 @@ def main():
             if trouble_streak == 20:
                 notify(f"⚠️ Restock monitor: the last 20 checks couldn't read the stock status "
                        f"({detail}). Alerts may be missed until this clears.")
-        # back off when blocked, jitter so requests don't look robotic
+        # INTERVAL is the time from one check's start to the next, give or take 10% so
+        # requests don't look robotic; back off when blocked.
         wait = INTERVAL * (min(blocked_streak, 6) + 1) if status == "blocked" else INTERVAL
-        time.sleep(wait + random.uniform(0, INTERVAL * 0.3))
+        time.sleep(max(0, wait * random.uniform(0.9, 1.1) - (time.time() - started)))
 
 
 if __name__ == "__main__":

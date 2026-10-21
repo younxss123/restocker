@@ -1,11 +1,11 @@
 # PS5 Pro restock monitor (Walmart Business, New only)
 
-Checks the Walmart Business PS5 Pro page about every 20 seconds and posts to Discord
+Checks the Walmart Business PS5 Pro page about every 15 seconds and posts to Discord
 the moment the **New** offer is in stock for under $1,000. Open Box is ignored, and so is a New
 listing at $1,000 or more (for example a reseller at $1,644.99).
 
 ## Running on GitHub Actions (current setup)
-The workflow in `.github/workflows/monitor.yml` checks every 20 seconds for about 55 minutes,
+The workflow in `.github/workflows/monitor.yml` checks every 15 seconds for about 55 minutes,
 then starts the next run itself, so it keeps going on its own. A schedule every 30 minutes
 restarts it if that chain ever breaks. It needs the repo secret `DISCORD_WEBHOOK_URL`.
 Alerts ping `@everyone`; set a repo variable `DISCORD_MENTION` (e.g. `<@YOUR_USER_ID>`) to change that.

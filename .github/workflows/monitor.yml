@@ -37,11 +37,11 @@ jobs:
           # v2: "in" now means in stock AND under MAX_PRICE, so old saved statuses don't carry over
           key: stock-state-v2-${{ github.run_id }}
           restore-keys: stock-state-v2-
-      - name: Check every 20s for ~55 minutes
+      - name: Check every 15s for ~55 minutes
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_MENTION: ${{ vars.DISCORD_MENTION || '@everyone' }}
-          CHECK_INTERVAL: "20"
+          CHECK_INTERVAL: "15"
           MAX_PRICE: ${{ vars.MAX_PRICE || '1000' }}
           RUN_FOR: ${{ inputs.run_for || '3300' }}
           STATE_FILE: state.txt
