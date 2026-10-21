@@ -20,6 +20,7 @@ Env vars:
   MAX_PRICE            only alert when the New price is below this (default 1000)
   XBOX_URL             the Microsoft Store page to watch; set it empty to stop watching it
   XBOX_STATE_FILE      like STATE_FILE, for the Xbox
+  XBOX_INTERVAL        seconds from one Xbox check to the next, +/-10% (default 60)
 """
 import json
 import os
@@ -57,6 +58,7 @@ XBOX_NAME = "Xbox Series X25 Limited Edition"
 XBOX_URL = os.environ.get(
     "XBOX_URL", "https://www.microsoft.com/en-us/d/xbox-series-x25-limited-edition/8wg5vqp0x4h3")
 XBOX_STATE_FILE = os.environ.get("XBOX_STATE_FILE", "")
+XBOX_INTERVAL = int(os.environ.get("XBOX_INTERVAL", "60"))
 XBOX_BROWSERS = ["chrome", "safari", "chrome_android"]
 # schema.org availability values that mean you can order it now.
 BUYABLE = {"INSTOCK", "PREORDER", "PRESALE", "LIMITEDAVAILABILITY", "ONLINEONLY", "BACKORDER"}
@@ -309,13 +311,14 @@ def main():
         if XBOX_URL:
             print(f"{XBOX_NAME}:", xbox_fetch())
         return
-    # Each product is checked on its own ~INTERVAL schedule with its own saved status,
+    # Each product is checked on its own schedule with its own saved status,
     # so trouble with one store never delays or resets the other.
-    watches = [Watch("PS5 Pro", lambda: fetch(), alert_text, STATE_FILE, PRODUCT_URL)]
+    watches = [Watch("PS5 Pro", lambda: fetch(), alert_text, STATE_FILE, PRODUCT_URL, INTERVAL)]
     if XBOX_URL:
-        watches.append(Watch(XBOX_NAME, lambda: xbox_fetch(), xbox_alert_text, XBOX_STATE_FILE, XBOX_URL))
+        watches.append(Watch(XBOX_NAME, lambda: xbox_fetch(), xbox_alert_text, XBOX_STATE_FILE, XBOX_URL,
+                             XBOX_INTERVAL))
     for w in watches:
-        log(f"Watching {w.url} every ~{INTERVAL}s")
+        log(f"Watching {w.url} every ~{w.interval}s")
     deadline = time.time() + RUN_FOR if RUN_FOR else None
     while deadline is None or time.time() < deadline:
         w = min(watches, key=lambda w: w.due)
@@ -326,8 +329,9 @@ def main():
 
 
 class Watch:
-    def __init__(self, name, check, alert, state_file, url):
+    def __init__(self, name, check, alert, state_file, url, interval):
         self.name, self.check, self.alert, self.state_file, self.url = name, check, alert, state_file, url
+        self.interval = interval
         self.last = None
         if state_file and os.path.exists(state_file):
             self.last = open(state_file).read().strip() or None
@@ -359,9 +363,9 @@ class Watch:
             if self.trouble_streak == 20:
                 notify(f"⚠️ {self.name} restock monitor: the last 20 checks couldn't read the stock status "
                        f"({detail}). Alerts may be missed until this clears.")
-        # INTERVAL is the time from one check's start to the next, give or take 10% so
+        # interval is the time from one check's start to the next, give or take 10% so
         # requests don't look robotic; back off when blocked.
-        wait = INTERVAL * (min(self.blocked_streak, 6) + 1) if status == "blocked" else INTERVAL
+        wait = self.interval * (min(self.blocked_streak, 6) + 1) if status == "blocked" else self.interval
         self.due = started + wait * random.uniform(0.9, 1.1)
 
 if __name__ == "__main__":

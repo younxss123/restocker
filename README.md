@@ -1,6 +1,6 @@
 # Restock monitor: PS5 Pro (Walmart Business) + Xbox Series X25 (Microsoft Store)
 
-Checks two pages, each about every 15 seconds, and posts to Discord:
+Checks the PS5 Pro page about every 15 seconds and the Xbox page about once a minute, and posts to Discord:
 
 - **PS5 Pro** on Walmart Business: the moment the **New** offer is in stock for under $1,000.
   Open Box is ignored, and so is a New listing at $1,000 or more (for example a reseller at $1,644.99).
@@ -36,6 +36,7 @@ Run it by hand from the Actions tab > Restock monitor (PS5 Pro + Xbox X25) > Run
 - `DISCORD_MENTION` e.g. `@everyone` or `<@YOUR_USER_ID>` so the alert pings your phone.
 - `PRODUCT_URL` watch a different Walmart page.
 - `XBOX_URL` watch a different Microsoft Store page; set it to an empty value to stop watching the Xbox.
+- `XBOX_INTERVAL` seconds between Xbox checks, default 60.
 - `MAX_PRICE` only alert when the New price is below this, default 1000.
 
 ## Where to run it
