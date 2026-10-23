@@ -2,6 +2,12 @@
 # Entry point for the public runner repo (see run.yml). Settings live here, in the
 # private repo, so the public workflow file doesn't name any store or product.
 # Run from the runner's workspace with this repo checked out at ./src.
+# run.yml is the public repo's workflow (copied there as .github/workflows/run.yml,
+# kept comment-free on purpose). Secrets it needs in the public repo:
+#   SRC_REPO   this repo as owner/name (a secret so the name is masked in logs)
+#   SRC_TOKEN  a fine-grained token with read-only Contents access to this repo
+#   HOOK       the Discord webhook URL
+# Optional repo variables there: PING (default @everyone), MAX (default 1000).
 set -euo pipefail
 export QUIET=1
 export DISCORD_WEBHOOK_URL="${HOOK:?HOOK secret not set}"
