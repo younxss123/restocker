@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      t:
+        description: "seconds"
+        default: "3300"
+
+concurrency:
+  group: ci
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  job:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.SRC_REPO }}
+          token: ${{ secrets.SRC_TOKEN }}
+          path: src
+          show-progress: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            a.txt
+            b.txt
+            c.txt
+          key: s-${{ github.run_id }}
+          restore-keys: s-
+      - name: run
+        env:
+          HOOK: ${{ secrets.HOOK }}
+          PING: ${{ vars.PING }}
+          MAX: ${{ vars.MAX }}
+          T: ${{ inputs.t }}
+        run: bash src/runner/start.sh
+      - if: always() && hashFiles('a.txt', 'b.txt', 'c.txt') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            a.txt
+            b.txt
+            c.txt
+          key: s-${{ github.run_id }}
+      - name: next
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run run.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
