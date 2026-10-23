@@ -74,7 +74,7 @@ def alerts(seq, last=None):
         return seq.pop(0)
 
     sent = []
-    monitor.XBOX_URL = ""  # PS5 only here; both products together are tested below
+    monitor.XBOX_URL = monitor.BESTBUY_SKU = ""  # PS5 only here; the stores together are tested below
     monitor.fetch, monitor.notify, monitor.log = fake_fetch, sent.append, lambda m: None
     monitor.time.sleep = lambda s: None
     try:
@@ -156,6 +156,7 @@ def both(ps5_seq, xbox_seq, run_for=1000):
     def sleep(s):
         clock[0] += max(s, 0)
     monitor.XBOX_URL, monitor.RUN_FOR, monitor.STATE_FILE, monitor.XBOX_STATE_FILE = "https://x", run_for, "", ""
+    monitor.BESTBUY_SKU = ""
     monitor.INTERVAL, monitor.XBOX_INTERVAL = 15, 60
     monitor.fetch, monitor.xbox_fetch = lambda: take(ps5_seq, "ps5"), lambda: take(xbox_seq, "xbox")
     monitor.notify, monitor.log = sent.append, lambda m: None
@@ -180,4 +181,57 @@ ok = any(m.startswith("⚠️ PS5 Pro") for m in sent) and not any("Xbox" in m f
 failed += not ok
 print(f"{'ok  ' if ok else 'FAIL'} trouble warning names the product")
 print("sample xbox alert:", monitor.xbox_alert_text(pre[1]).splitlines()[0])
+
+
+def bestbuy_answer(state, text, sku="6690019"):
+    """Shaped like the live button-state answer (captured 2026-10-23: COMING_SOON)."""
+    atom = {"$type": "atom", "value": {"buttonStateResponseInfos": [
+        {"skuId": sku, "buttonState": state, "displayText": text}]}, "$expires": -5000}
+    return json.dumps({"jsonGraph": {"shop": {"buttonstate": {"v5": {"item": {"skus": {sku: {"conditions": {
+        "NONE": {"destinationZipCode": {"%20": {"storeId": {"%20": {"context": {"cyp": {"addAll": {
+            "false": atom}}}}}}}}}}}}}}}}})
+
+
+monitor.BESTBUY_SKU = "6690019"
+bestbuy_cases = [
+    ("bestbuy live today: coming soon", bestbuy_answer("COMING_SOON", "Coming Soon"), "out"),
+    ("bestbuy sold out", bestbuy_answer("SOLD_OUT", "Sold Out"), "out"),
+    ("bestbuy not available", bestbuy_answer("NOT_AVAILABLE", "Not Available"), "out"),
+    ("bestbuy add to cart", bestbuy_answer("ADD_TO_CART", "Add to Cart"), "in"),
+    ("bestbuy pre-order", bestbuy_answer("PRE_ORDER", "Pre-order"), "in"),
+    ("bestbuy unfamiliar state still alerts", bestbuy_answer("SOMETHING_NEW", "Buy now"), "in"),
+    ("bestbuy other sku's state ignored", bestbuy_answer("ADD_TO_CART", "Add to Cart", sku="1"), "unknown"),
+    ("bestbuy not JSON", "<html>Page Not Found</html>", "unknown"),
+    ("bestbuy Access Denied", "<html><title>Access Denied</title></html>", "blocked"),
+]
+for name, text, want in bestbuy_cases:
+    got = monitor.bestbuy_parse(text)
+    ok = got[0] == want
+    failed += not ok
+    print(f"{'ok  ' if ok else 'FAIL'} {name}: {got}")
+print("sample bestbuy alert:", monitor.bestbuy_alert_text(monitor.bestbuy_parse(
+    bestbuy_answer("PRE_ORDER", "Pre-order"))[1]).splitlines()[0])
+
+# All three stores together on their workflow intervals: PS5 15s, Microsoft 60s, Best Buy 30s.
+clock, sent, counts = [0.0], [], {"ps5": 0, "xbox": 0, "bestbuy": 0}
+bb_seq = [("out", "COMING_SOON")] * 3 + [("in", 'Orderable: button says "Add to Cart" (ADD_TO_CART)')] * 3
+
+
+def count(key, result):
+    counts[key] += 1
+    return result
+
+
+monitor.BESTBUY_SKU, monitor.BESTBUY_STATE_FILE, monitor.BESTBUY_INTERVAL = "6690019", "", 30
+monitor.XBOX_URL, monitor.RUN_FOR = "https://x", 1000
+monitor.fetch = lambda: count("ps5", ("out", "x"))
+monitor.xbox_fetch = lambda: count("xbox", ("out", "x"))
+monitor.bestbuy_fetch = lambda: count("bestbuy", bb_seq.pop(0) if bb_seq else ("out", "SOLD_OUT"))
+monitor.notify, monitor.time.time = sent.append, lambda: clock[0]
+monitor.time.sleep = lambda s: clock.__setitem__(0, clock[0] + max(s, 0))
+monitor.main()
+ok = (len(sent) == 1 and "Best Buy" in sent[0] and "Special Edition" in sent[0]
+      and 60 <= counts["ps5"] <= 75 and 15 <= counts["xbox"] <= 19 and 30 <= counts["bestbuy"] <= 38)
+failed += not ok
+print(f"{'ok  ' if ok else 'FAIL'} Best Buy alerts once, every ~30s, without changing the others: checks={counts}")
 sys.exit(1 if failed else 0)
