@@ -31,6 +31,8 @@ Env vars:
   BESTBUY_URL          the Best Buy page linked in the alert
   BESTBUY_STATE_FILE   like STATE_FILE, for Best Buy
   BESTBUY_INTERVAL     seconds from one Best Buy check to the next, +/-10% (default 30)
+  QUIET                set to 1 to print nothing while watching (for public run logs);
+                       Discord alerts and warnings still go out
 """
 import json
 import os
@@ -89,7 +91,12 @@ BESTBUY_BROWSERS = ["chrome", "safari", "chrome_android", "safari_ios"]
 BESTBUY_NOT_BUYABLE = {"COMING_SOON", "SOLD_OUT", "NOT_AVAILABLE", "UNAVAILABLE_NATIONWIDE", "TEMPORARILY_UNAVAILABLE"}
 
 
+QUIET = os.environ.get("QUIET", "") not in ("", "0")
+
+
 def log(msg):
+    if QUIET:
+        return
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
 
 
