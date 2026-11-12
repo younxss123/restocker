@@ -1,4 +1,4 @@
-name: Restock monitor (PS5 Pro + Xbox X25 + Best Buy)
+name: Restock monitor (PS5 Pro + Xbox X25 + Best Buy + LEGO AT-AT)
 
 on:
   # Each run watches for ~55 minutes, then starts the next run itself (last step),
@@ -50,6 +50,12 @@ jobs:
           path: bestbuy_state.txt
           key: bestbuy-state-v1-${{ github.run_id }}
           restore-keys: bestbuy-state-v1-
+      - name: Restore last LEGO status
+        uses: actions/cache/restore@v4
+        with:
+          path: lego_state.txt
+          key: lego-state-v1-${{ github.run_id }}
+          restore-keys: lego-state-v1-
       - name: Check every 15s for ~55 minutes
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -57,11 +63,14 @@ jobs:
           CHECK_INTERVAL: "15"
           XBOX_INTERVAL: "60"
           BESTBUY_INTERVAL: "30"
+          LEGO_INTERVAL: "15"
+          LEGO_MAX_PRICE: ${{ vars.LEGO_MAX_PRICE || '30' }}
           MAX_PRICE: ${{ vars.MAX_PRICE || '1000' }}
           RUN_FOR: ${{ inputs.run_for || '3300' }}
           STATE_FILE: state.txt
           XBOX_STATE_FILE: xbox_state.txt
           BESTBUY_STATE_FILE: bestbuy_state.txt
+          LEGO_STATE_FILE: lego_state.txt
         run: python monitor.py
       - name: Save last status
         if: always()
@@ -81,6 +90,12 @@ jobs:
         with:
           path: bestbuy_state.txt
           key: bestbuy-state-v1-${{ github.run_id }}
+      - name: Save last LEGO status
+        if: always() && hashFiles('lego_state.txt') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: lego_state.txt
+          key: lego-state-v1-${{ github.run_id }}
       - name: Start the next run
         # Skipped when you cancel a run by hand, so cancelling stops the chain.
         if: ${{ !cancelled() }}
