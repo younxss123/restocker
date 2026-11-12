@@ -2,7 +2,7 @@
 """Restock monitor for the PS5 Pro (Walmart Business, New only), the
 Xbox Series X25 Limited Edition (Microsoft Store, pre-order or in stock) and the
 Xbox Series X25 Special Edition (Best Buy, pre-order or in stock) and the
-LEGO Star Wars Gingerbread AT-AT 40806 (Walmart Business, New under $40).
+LEGO Star Wars Gingerbread AT-AT 40806 (Walmart Business, New under $30).
 
 Polls the product page, reads the "New" offer's availability and price from the
 page's embedded __NEXT_DATA__ JSON, and posts to a Discord webhook when it becomes
@@ -33,7 +33,7 @@ Env vars:
   BESTBUY_STATE_FILE   like STATE_FILE, for Best Buy
   BESTBUY_INTERVAL     seconds from one Best Buy check to the next, +/-10% (default 30)
   LEGO_URL             the Walmart Business LEGO 40806 page; set it empty to stop watching it
-  LEGO_MAX_PRICE       only alert when its New price is below this (default 40)
+  LEGO_MAX_PRICE       only alert when its New price is below this (default 30)
   LEGO_STATE_FILE      like STATE_FILE, for the LEGO set
   LEGO_INTERVAL        seconds from one LEGO check to the next, +/-10% (default 15)
 """
@@ -86,7 +86,7 @@ LEGO_NAME = "LEGO Star Wars Gingerbread AT-AT (40806)"
 LEGO_URL = os.environ.get("LEGO_URL", "https://business.walmart.com/ip/18051805903")
 LEGO_STATE_FILE = os.environ.get("LEGO_STATE_FILE", "")
 LEGO_INTERVAL = int(os.environ.get("LEGO_INTERVAL", "15"))
-LEGO_MAX_PRICE = price_env("LEGO_MAX_PRICE", 40)
+LEGO_MAX_PRICE = price_env("LEGO_MAX_PRICE", 30)
 
 XBOX_NAME = "Xbox Series X25 Limited Edition"
 XBOX_URL = os.environ.get(

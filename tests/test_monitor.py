@@ -235,7 +235,7 @@ ok = (len(sent) == 1 and "Best Buy" in sent[0] and "Special Edition" in sent[0]
 failed += not ok
 print(f"{'ok  ' if ok else 'FAIL'} Best Buy alerts once, every ~30s, without changing the others: checks={counts}")
 
-# LEGO 40806 on Walmart Business: same page format as the PS5, its own $40 limit.
+# LEGO 40806 on Walmart Business: same page format as the PS5, its own $30 limit.
 LEGO_WALMART, LEGO_RESELLER = "LEGOWMT", "LEGORESELL"
 lego_cases = [
     ("lego sold by Walmart at $28", page([offer(LEGO_WALMART, True, "IN_STOCK", 28)], LEGO_WALMART, "IN_STOCK", 28),
@@ -245,9 +245,13 @@ lego_cases = [
     ("lego out of stock", page([offer(LEGO_WALMART, True, "OUT_OF_STOCK", 28)], LEGO_WALMART, "OUT_OF_STOCK", 28),
      "out"),
     ("lego page without conditionOffers at $28", page([], None, "IN_STOCK", 28), "in"),
+    ("lego at $30 is not under $30", page([offer(LEGO_WALMART, True, "IN_STOCK", 30)], LEGO_WALMART, "IN_STOCK", 30),
+     "out"),
+    ("lego at $34.99 is over", page([offer(LEGO_WALMART, True, "IN_STOCK", 34.99)], LEGO_WALMART, "IN_STOCK", 34.99),
+     "out"),
 ]
 for name, html, want in lego_cases:
-    got = monitor.parse(html, 40)
+    got = monitor.parse(html, 30)
     ok = got[0] == want
     failed += not ok
     print(f"{'ok  ' if ok else 'FAIL'} {name}: {got}")
@@ -271,7 +275,7 @@ def walmart(url=None, max_price=None):
 
 monitor.fetch, monitor.bestbuy_fetch = walmart, lambda: count("bestbuy", ("out", "SOLD_OUT"))
 monitor.main()
-ok = (len(sent) == 1 and "Gingerbread AT-AT" in sent[0] and "under $40" in sent[0]
+ok = (len(sent) == 1 and "Gingerbread AT-AT" in sent[0] and "under $30" in sent[0]
       and 60 <= counts["lego"] <= 75 and 60 <= counts["ps5"] <= 75)
 failed += not ok
 print(f"{'ok  ' if ok else 'FAIL'} LEGO alerts once, every ~15s, alongside the others: checks={counts}")
