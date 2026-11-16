@@ -6,7 +6,7 @@ on:
       product:
         description: "Which product's alert to show"
         type: choice
-        options: [ps5, xbox, bestbuy]
+        options: [ps5, bestbuy]
         default: ps5
 
 jobs:
