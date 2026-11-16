@@ -74,7 +74,7 @@ def alerts(seq, last=None):
         return seq.pop(0)
 
     sent = []
-    monitor.XBOX_URL = monitor.BESTBUY_SKU = ""  # PS5 only here; the stores together are tested below
+    monitor.BESTBUY_SKU = ""  # PS5 only here; both stores together are tested below
     monitor.fetch, monitor.notify, monitor.log = fake_fetch, sent.append, lambda m: None
     monitor.time.sleep = lambda s: None
     try:
@@ -109,80 +109,6 @@ msgs = alerts([over, under])
 print("sample alert:", msgs[-1].splitlines()[0])
 
 
-def xbox_page(ld_availability, button_disabled, cta, action_text="Build your device", price=899.99,
-              release="2026-11-13T05:00:00.0000000Z"):
-    """Shaped like the live Microsoft Store page (captured 2026-10-21: OutOfStock, button off)."""
-    ld = {"@context": "https://schema.org", "@type": "Product", "name": "XBOX Series X25 Limited Edition",
-          "offers": {"@type": "AggregateOffer", "priceCurrency": "USD", "lowPrice": price,
-                     "offers": [{"availability": f"https://schema.org/{ld_availability}", "price": price}]}}
-    box = {"product": {"productId": "8wg5vqp0x4h3", "skuOrder": {"0": ["JXZJ"]}, "skuInfo": {"JXZJ": {
-        "skuId": "JXZJ", "price": {"current": f"${price:,.2f}"}, "ctaDescription": cta,
-        "releaseMessageDateValue": release,
-        "action": {"action": "ConfigureDevice", "actionText": action_text, "disabled": button_disabled}}}}}
-    # The live page also has a static marketing "Pre-order now" button, which must not count.
-    return (f'<script type="application/ld+json">{json.dumps(ld)}</script>'
-            '<a data-bi-cn="Pre-order now" aria-label="Pre-order now">Pre-order now</a>'
-            f'<script>window.__BuyBox__={json.dumps(box)};</script>')
-
-
-xbox_cases = [
-    ("xbox live page today: out of stock", xbox_page("OutOfStock", True, "Out of stock"), "out", "Out of stock"),
-    ("xbox pre-order opens", xbox_page("PreOrder", False, None, "Pre-order"), "in", "Pre-order open"),
-    ("xbox restock after release", xbox_page("InStock", False, None, "Add to cart", release="2000-01-01"),
-     "in", "In stock"),
-    ("xbox buyable before release is a pre-order", xbox_page("InStock", False, None), "in", "Pre-order open"),
-    ("xbox button on, schema still says out", xbox_page("OutOfStock", False, None, "Pre-order"), "in", "Pre-order"),
-    ("xbox schema says pre-order, button data missing",
-     xbox_page("PreOrder", True, None).split("<script>window")[0], "in", "Pre-order open"),
-    ("xbox nothing readable", "<html>hi</html>", "unknown", ""),
-    ("xbox Access Denied", "<html><title>Access Denied</title></html>", "blocked", ""),
-]
-for name, html, want, prefix in xbox_cases:
-    got = monitor.xbox_parse(html)
-    ok = got[0] == want and got[1].startswith(prefix)
-    failed += not ok
-    print(f"{'ok  ' if ok else 'FAIL'} {name}: {got}")
-
-
-def both(ps5_seq, xbox_seq, run_for=1000):
-    """Run main() with both products on a fake clock; returns (messages, checks done per product)."""
-    ps5_seq, xbox_seq, sent, clock = list(ps5_seq), list(xbox_seq), [], [0.0]
-    counts = {"ps5": 0, "xbox": 0}
-
-    def take(seq, key):
-        counts[key] += 1
-        return seq.pop(0) if seq else ("out", "x")
-
-    def sleep(s):
-        clock[0] += max(s, 0)
-    monitor.XBOX_URL, monitor.RUN_FOR, monitor.STATE_FILE, monitor.XBOX_STATE_FILE = "https://x", run_for, "", ""
-    monitor.BESTBUY_SKU = ""
-    monitor.INTERVAL, monitor.XBOX_INTERVAL = 15, 60
-    monitor.fetch, monitor.xbox_fetch = lambda: take(ps5_seq, "ps5"), lambda: take(xbox_seq, "xbox")
-    monitor.notify, monitor.log = sent.append, lambda m: None
-    monitor.time.sleep, monitor.time.time = sleep, lambda: clock[0]
-    monitor.main()
-    return sent, counts
-
-
-pre = ("in", 'Pre-order open: $899.99, button says "Pre-order"')
-sent, counts = both([over, under, under], [("out", "Out of stock"), pre, pre])
-names = sorted(m.split("**")[1] for m in sent)
-ok = (len(names) == 2 and names[0].startswith("PS5 Pro") and "Xbox Series X25" in names[1]
-      and "PRE-ORDERS ARE OPEN" in names[1] and 60 <= counts["ps5"] <= 75 and 15 <= counts["xbox"] <= 19)
-failed += not ok
-print(f"{'ok  ' if ok else 'FAIL'} both alert once each, labelled, PS5 every ~15s and Xbox every ~60s: {names} checks={counts}")
-blocked = ("blocked", "HTTP 403")
-sent, counts = both([blocked] * 100, [], run_for=3000)
-ok = 45 <= counts["xbox"] <= 56 and counts["ps5"] < counts["xbox"]
-failed += not ok
-print(f"{'ok  ' if ok else 'FAIL'} PS5 blocked backoff doesn't slow the Xbox: checks={counts}")
-ok = any(m.startswith("⚠️ PS5 Pro") for m in sent) and not any("Xbox" in m for m in sent)
-failed += not ok
-print(f"{'ok  ' if ok else 'FAIL'} trouble warning names the product")
-print("sample xbox alert:", monitor.xbox_alert_text(pre[1]).splitlines()[0])
-
-
 def bestbuy_answer(state, text, sku="6690019"):
     """Shaped like the live button-state answer (captured 2026-10-23: COMING_SOON)."""
     atom = {"$type": "atom", "value": {"buttonStateResponseInfos": [
@@ -212,26 +138,43 @@ for name, text, want in bestbuy_cases:
 print("sample bestbuy alert:", monitor.bestbuy_alert_text(monitor.bestbuy_parse(
     bestbuy_answer("PRE_ORDER", "Pre-order"))[1]).splitlines()[0])
 
-# All three stores together on their workflow intervals: PS5 15s, Microsoft 60s, Best Buy 30s.
-clock, sent, counts = [0.0], [], {"ps5": 0, "xbox": 0, "bestbuy": 0}
-bb_seq = [("out", "COMING_SOON")] * 3 + [("in", 'Orderable: button says "Add to Cart" (ADD_TO_CART)')] * 3
 
 
-def count(key, result):
-    counts[key] += 1
-    return result
+def both(ps5_seq, bb_seq, run_for=1000):
+    """Run main() with both stores on a fake clock; returns (messages, checks done per store)."""
+    ps5_seq, bb_seq, sent, clock = list(ps5_seq), list(bb_seq), [], [0.0]
+    counts = {"ps5": 0, "bestbuy": 0}
+
+    def take(seq, key, idle):
+        counts[key] += 1
+        return seq.pop(0) if seq else idle
+
+    def sleep(s):
+        clock[0] += max(s, 0)
+    monitor.BESTBUY_SKU, monitor.RUN_FOR, monitor.STATE_FILE, monitor.BESTBUY_STATE_FILE = "6690019", run_for, "", ""
+    monitor.INTERVAL, monitor.BESTBUY_INTERVAL = 15, 30
+    monitor.fetch = lambda: take(ps5_seq, "ps5", ("out", "x"))
+    monitor.bestbuy_fetch = lambda: take(bb_seq, "bestbuy", ("out", "SOLD_OUT"))
+    monitor.notify, monitor.log = sent.append, lambda m: None
+    monitor.time.sleep, monitor.time.time = sleep, lambda: clock[0]
+    monitor.main()
+    return sent, counts
 
 
-monitor.BESTBUY_SKU, monitor.BESTBUY_STATE_FILE, monitor.BESTBUY_INTERVAL = "6690019", "", 30
-monitor.XBOX_URL, monitor.RUN_FOR = "https://x", 1000
-monitor.fetch = lambda: count("ps5", ("out", "x"))
-monitor.xbox_fetch = lambda: count("xbox", ("out", "x"))
-monitor.bestbuy_fetch = lambda: count("bestbuy", bb_seq.pop(0) if bb_seq else ("out", "SOLD_OUT"))
-monitor.notify, monitor.time.time = sent.append, lambda: clock[0]
-monitor.time.sleep = lambda s: clock.__setitem__(0, clock[0] + max(s, 0))
-monitor.main()
-ok = (len(sent) == 1 and "Best Buy" in sent[0] and "Special Edition" in sent[0]
-      and 60 <= counts["ps5"] <= 75 and 15 <= counts["xbox"] <= 19 and 30 <= counts["bestbuy"] <= 38)
+# Both stores together on their workflow intervals: PS5 15s, Best Buy 30s.
+bb_in = ("in", 'Orderable: button says "Add to Cart" (ADD_TO_CART)')
+sent, counts = both([over, under, under], [("out", "COMING_SOON")] * 3 + [bb_in] * 3)
+names = sorted(m.split("**")[1] for m in sent)
+ok = (len(names) == 2 and names[0].startswith("PS5 Pro") and "Special Edition" in names[1]
+      and any("Best Buy" in m for m in sent) and 60 <= counts["ps5"] <= 75 and 30 <= counts["bestbuy"] <= 38)
 failed += not ok
-print(f"{'ok  ' if ok else 'FAIL'} Best Buy alerts once, every ~30s, without changing the others: checks={counts}")
+print(f"{'ok  ' if ok else 'FAIL'} both alert once each, labelled, PS5 every ~15s and Best Buy every ~30s: "
+      f"{names} checks={counts}")
+sent, counts = both([("blocked", "HTTP 403")] * 100, [], run_for=3000)
+ok = 90 <= counts["bestbuy"] <= 112 and counts["ps5"] < counts["bestbuy"]
+failed += not ok
+print(f"{'ok  ' if ok else 'FAIL'} PS5 blocked backoff doesn't slow Best Buy: checks={counts}")
+ok = any(m.startswith("⚠️ PS5 Pro") for m in sent) and not any("Best Buy" in m for m in sent)
+failed += not ok
+print(f"{'ok  ' if ok else 'FAIL'} trouble warning names the product")
 sys.exit(1 if failed else 0)

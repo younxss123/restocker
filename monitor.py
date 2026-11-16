@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
-"""Restock monitor for the PS5 Pro (Walmart Business, New only), the
-Xbox Series X25 Limited Edition (Microsoft Store, pre-order or in stock) and the
+"""Restock monitor for the PS5 Pro (Walmart Business, New only) and the
 Xbox Series X25 Special Edition (Best Buy, pre-order or in stock).
 
 Polls the product page, reads the "New" offer's availability and price from the
 page's embedded __NEXT_DATA__ JSON, and posts to a Discord webhook when it becomes
 in stock under MAX_PRICE. Open Box and other conditions are ignored, and so is a
 New listing priced at MAX_PRICE or more (e.g. a reseller at $1,644.99).
-
-The Xbox page is checked on the same schedule and alerts, at any price, when its
-buy button turns on, whether that's for a pre-order or a restock.
 
 Best Buy blocks its product pages for cloud servers, so the Best Buy SKU is read
 from the small button-state API the product page itself uses for its
@@ -24,9 +20,6 @@ Env vars:
   RUN_FOR              stop after this many seconds (default 0 = run forever)
   STATE_FILE           file that remembers the last status between runs
   MAX_PRICE            only alert when the New price is below this (default 1000)
-  XBOX_URL             the Microsoft Store page to watch; set it empty to stop watching it
-  XBOX_STATE_FILE      like STATE_FILE, for the Xbox
-  XBOX_INTERVAL        seconds from one Xbox check to the next, +/-10% (default 60)
   BESTBUY_SKU          the Best Buy SKU to watch; set it empty to stop watching Best Buy
   BESTBUY_URL          the Best Buy page linked in the alert
   BESTBUY_STATE_FILE   like STATE_FILE, for Best Buy
@@ -38,7 +31,7 @@ import random
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from urllib.parse import quote
 
 # curl_cffi mimics a real browser's TLS fingerprint. Walmart's bot check lets the
@@ -64,15 +57,6 @@ try:
 except ValueError:
     MAX_PRICE = 1000.0
 IN_STOCK = {"IN_STOCK", "AVAILABLE", "LIMITED_STOCK"}
-
-XBOX_NAME = "Xbox Series X25 Limited Edition"
-XBOX_URL = os.environ.get(
-    "XBOX_URL", "https://www.microsoft.com/en-us/d/xbox-series-x25-limited-edition/8wg5vqp0x4h3")
-XBOX_STATE_FILE = os.environ.get("XBOX_STATE_FILE", "")
-XBOX_INTERVAL = int(os.environ.get("XBOX_INTERVAL", "60"))
-XBOX_BROWSERS = ["chrome", "safari", "chrome_android"]
-# schema.org availability values that mean you can order it now.
-BUYABLE = {"INSTOCK", "PREORDER", "PRESALE", "LIMITEDAVAILABILITY", "ONLINEONLY", "BACKORDER"}
 
 BESTBUY_NAME = "Xbox Series X25 Special Edition"
 BESTBUY_SKU = os.environ.get("BESTBUY_SKU", "6690019")
@@ -231,87 +215,6 @@ def notify(text):
         time.sleep(2 ** attempt)
 
 
-def xbox_parse(html):
-    """Return (status, detail) for the Microsoft Store page, status as in parse().
-
-    Two signals, both server-rendered fresh on every request:
-      - the schema.org Product JSON-LD, whose offer "availability" is e.g. OutOfStock,
-        PreOrder or InStock
-      - window.__BuyBox__, whose SKU has the buy button ("action", with "disabled")
-        and the text under the price ("ctaDescription", e.g. "Out of stock")
-    Either one saying it can be ordered counts, so a real drop isn't missed.
-    The page also has a static "Pre-order now" marketing button; that is ignored.
-    """
-    low = html.lower()
-    if "<title>access denied" in low or "px-captcha" in low:
-        return "blocked", "bot check page"
-    ld, price = None, None
-    for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', html, re.S):
-        try:
-            d = json.loads(m.group(1))
-        except ValueError:
-            continue
-        if not (isinstance(d, dict) and d.get("@type") == "Product"):
-            continue
-        offers = d.get("offers") or {}
-        offers = (offers.get("offers") or [offers]) if isinstance(offers, dict) else offers
-        for o in offers if isinstance(offers, list) else []:
-            if isinstance(o, dict) and o.get("availability"):
-                ld = str(o["availability"]).rstrip("/").rsplit("/", 1)[-1]
-                price = price_value(o.get("price"))
-                break
-    sku = {}
-    m = re.search(r"window\.__BuyBox__\s*=\s*", html)
-    if m:
-        try:
-            box, _ = json.JSONDecoder().raw_decode(html, m.end())
-        except ValueError:
-            box = {}
-        product = box.get("product") if isinstance(box, dict) else None
-        skus = (product or {}).get("skuInfo") or {}
-        order = ((product or {}).get("skuOrder") or {}).get("0") or list(skus)
-        sku = next((skus[k] for k in order if isinstance(skus.get(k), dict)), {})
-    action = sku.get("action") if isinstance(sku.get("action"), dict) else {}
-    if ld is None and "disabled" not in action:
-        return "unknown", "availability not found on Microsoft Store page"
-    if price is None:
-        price = price_value(re.sub(r"[$,]", "", str((sku.get("price") or {}).get("current") or "")) or None)
-
-    button_on = action.get("disabled") is False
-    cta = sku.get("ctaDescription")
-    words = " ".join(str(x) for x in (ld, action.get("actionText"), cta) if x).lower()
-    preorder = str(ld).upper() in ("PREORDER", "PRESALE") or "pre-order" in words or "preorder" in words
-    # Buyable before its release date (2026-11-13 on the page today) is a pre-order too.
-    release = str(sku.get("releaseMessageDateValue") or "")[:10]
-    preorder = preorder or (bool(re.fullmatch(r"\d{4}-\d\d-\d\d", release))
-                            and release > datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-    shown = f"${price:,.2f}" if price is not None else "price not shown"
-    if button_on or str(ld).upper() in BUYABLE:
-        button = f"button says \"{action['actionText']}\"" if button_on and action.get("actionText") else ld
-        return "in", f"{'Pre-order open' if preorder else 'In stock'}: {shown}, {button}"
-    return "out", ", ".join(b for b in (cta or ld, shown, "buy button off") if b)
-
-
-_xbox_session = None
-_xbox_browser = 0
-
-
-def xbox_fetch():
-    global _xbox_session, _xbox_browser
-    if _xbox_session is None:
-        _xbox_session = http.Session(impersonate=XBOX_BROWSERS[_xbox_browser % len(XBOX_BROWSERS)])
-    sep = "&" if "?" in XBOX_URL else "?"
-    r = _xbox_session.get(f"{XBOX_URL}{sep}_={int(time.time())}", timeout=20)
-    if r.status_code in (403, 429) or r.status_code >= 500:
-        result = "blocked", f"HTTP {r.status_code}"
-    else:
-        result = xbox_parse(r.text)
-    if result[0] == "blocked":  # switch browser profile next time
-        _xbox_browser += 1
-        _xbox_session = None
-    return result
-
-
 def bestbuy_api_url(sku):
     """The button-state request the Best Buy product page makes for its Add to Cart button."""
     path = ["shop", "buttonstate", "v5", "item", "skus", int(sku), "conditions", "NONE",
@@ -370,11 +273,6 @@ def bestbuy_alert_text(detail):
     return f"🚨 **{BESTBUY_NAME}: {what}** at Best Buy! ({detail})\n{BESTBUY_URL}"
 
 
-def xbox_alert_text(detail):
-    what = "PRE-ORDERS ARE OPEN" if detail.startswith("Pre-order") else "IN STOCK"
-    return f"🚨 **{XBOX_NAME}: {what}** on Microsoft Store! ({detail})\n{XBOX_URL}"
-
-
 def alert_text(detail):
     return (f"🚨 **PS5 Pro (New) is IN STOCK under {money(MAX_PRICE)}** on Walmart Business! "
             f"({detail})\n{PRODUCT_URL}")
@@ -387,25 +285,18 @@ def main():
     if "--demo-alert" in sys.argv:
         if "bestbuy" in sys.argv:
             sample = bestbuy_alert_text('Orderable: button says "Add to Cart" (ADD_TO_CART)')
-        elif "xbox" in sys.argv:
-            sample = xbox_alert_text('Pre-order open: $899.99, button says "Pre-order"')
         else:
             sample = alert_text("New: IN_STOCK at $899.00")
         notify("🧪 **TEST, not a real restock.** This is what a restock alert looks like:\n" + sample)
         return
     if "--once" in sys.argv:
         print("PS5 Pro:", fetch())
-        if XBOX_URL:
-            print(f"{XBOX_NAME}:", xbox_fetch())
         if BESTBUY_SKU:
             print(f"{BESTBUY_NAME} (Best Buy):", bestbuy_fetch())
         return
     # Each product is checked on its own schedule with its own saved status,
     # so trouble with one store never delays or resets the others.
     watches = [Watch("PS5 Pro", lambda: fetch(), alert_text, STATE_FILE, PRODUCT_URL, INTERVAL)]
-    if XBOX_URL:
-        watches.append(Watch(XBOX_NAME, lambda: xbox_fetch(), xbox_alert_text, XBOX_STATE_FILE, XBOX_URL,
-                             XBOX_INTERVAL))
     if BESTBUY_SKU:
         watches.append(Watch(f"{BESTBUY_NAME} (Best Buy)", lambda: bestbuy_fetch(), bestbuy_alert_text,
                              BESTBUY_STATE_FILE, BESTBUY_URL, BESTBUY_INTERVAL))
