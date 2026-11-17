@@ -1,71 +1,63 @@
-"""Show where the stock status lives in the product page's data, and what the monitor reads from it."""
+"""Probe PlayStation Direct from a GitHub runner: what the PS5 Pro page and stock API return."""
 import json
-import os
 import re
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import monitor
-
-
-def paths(node, path=""):
-    if isinstance(node, dict):
-        if "availabilityStatus" in node:
-            keys = [k for k in node if re.search(r"condition|offer|seller|price|availab|usItemId|name", k, re.I)]
-            brief = {k: node[k] for k in keys if not isinstance(node[k], (dict, list))}
-            print(f"{path}: {json.dumps(brief)[:400]}")
-        for k, v in node.items():
-            paths(v, f"{path}.{k}")
-    elif isinstance(node, list):
-        for i, v in enumerate(node):
-            paths(v, f"{path}[{i}]")
-
-
 import time
 
-m = None
-for attempt in range(6):
-    monitor._browser = attempt
-    monitor.new_session()
-    r = monitor._session.get(monitor.PRODUCT_URL, timeout=20, headers={"Referer": monitor.HOME_URL})
-    m = re.search(r'<script[^>]*id=["\']?__NEXT_DATA__["\']?[^>]*>(.*?)</script>', r.text, re.S)
-    print(f"attempt {attempt} {monitor.BROWSERS[attempt % 2]}: HTTP {r.status_code} len={len(r.text)} "
-          f"blocked={'robot or human' in r.text.lower()} next_data={bool(m)}", flush=True)
-    if m:
-        break
-    time.sleep(10)
-if not m:
+from curl_cffi import requests as http
+
+PAGE = "https://direct.playstation.com/en-us/buy-consoles/playstation5-pro-console"
+API = ("https://api.direct.playstation.com/commercewebservices/ps-direct-us/users/anonymous/products/"
+       "productList?fields=BASIC&productCodes={}")
+
+
+def show(label, r):
     t = r.text
-    for i in [x.start() for x in re.finditer("__NEXT_DATA__", t)][:3]:
-        print("NEXT_DATA context:", repr(t[max(0, i - 200):i + 200]))
-    for i in [x.start() for x in re.finditer("availabilityStatus", t)][:15]:
-        print("avail context:", repr(t[max(0, i - 300):i + 80]))
-    sys.exit("never parsed the product page")
-data = json.loads(m.group(1))
-paths(data)
-for k in ("conditionGroupCode", "conditionCode", "variantCriteria", "allOffers", "conditionGroups"):
-    for d in monitor.walk(data):
-        if k in d:
-            print(k, "=>", json.dumps(d[k])[:600])
-            break
-product = data["props"]["pageProps"]["initialData"]["data"]["product"]
-for i, offer in enumerate(product.get("conditionOffers") or []):
-    print(f"conditionOffers[{i}] =>", json.dumps(offer)[:2500])
-print("product.priceInfo =>", json.dumps(product.get("priceInfo"))[:2500])
+    title = re.search(r"<title[^>]*>(.*?)</title>", t, re.S | re.I)
+    print(f"== {label}: HTTP {r.status_code} len={len(t)} url={r.url} title={title.group(1).strip()[:100] if title else None}")
+    for w in ["queue-it", "queueit", "akamai", "access denied", "px-captcha", "captcha", "outOfStock", "inStock",
+              "out of stock", "add to cart", "stockLevelStatus", "sold out", "productCode", "data-product-code",
+              "sku"]:
+        n = t.lower().count(w.lower())
+        if n:
+            i = t.lower().find(w.lower())
+            print(f"   {w!r} x{n}: {t[max(0, i - 150):i + 150]!r}")
 
 
-def price_paths(node, path=""):
-    if isinstance(node, dict):
-        for k, v in node.items():
-            if re.search(r"price", k, re.I) and not isinstance(v, (dict, list)) and v is not None:
-                print(f"price field {path}.{k} = {v!r}")
-            price_paths(v, f"{path}.{k}")
-    elif isinstance(node, list):
-        for i, v in enumerate(node):
-            price_paths(v, f"{path}[{i}]")
+codes = set()
+for imp in ["chrome", "safari", "chrome_android", "safari_ios", "firefox"]:
+    try:
+        s = http.Session(impersonate=imp)
+        r = s.get(PAGE, timeout=25)
+        show(f"page {imp}", r)
+        if r.status_code == 200 and len(r.text) > 5000:
+            for pat in [r'data-product-code="(\w+)"', r'"productCode"\s*:\s*"(\w+)"', r'productCodes?=(\w+)',
+                        r'"code"\s*:\s*"(\d{5,})"', r'data-sku="(\w+)"', r'"sku"\s*:\s*"(\w+)"']:
+                found = set(re.findall(pat, r.text))
+                if found:
+                    print("   codes via", pat, found)
+                    codes |= found
+            open(f"page_{imp}.html", "w").write(r.text)
+    except Exception as e:
+        print(f"== page {imp}: error {e}")
+    time.sleep(3)
 
+print("codes:", codes)
+for code in list(codes)[:6] + ["3006646", "1000044425", "1000044424"]:
+    for imp in ["chrome", "safari_ios"]:
+        try:
+            r = http.get(API.format(code), impersonate=imp, timeout=20,
+                         headers={"Origin": "https://direct.playstation.com", "Referer": PAGE})
+            print(f"== api {code} {imp}: HTTP {r.status_code} {r.text[:600]!r}")
+        except Exception as e:
+            print(f"== api {code} {imp}: error {e}")
+        time.sleep(1)
 
-price_paths(product, "product")
-print("monitor.parse:", monitor.parse(r.text))
-for _ in range(3):
-    print("monitor.fetch:", monitor.fetch(), flush=True)
+# 10-second cadence: does it keep answering?
+s = http.Session(impersonate="chrome")
+for i in range(12):
+    try:
+        r = s.get(PAGE + f"?_={int(time.time())}", timeout=20)
+        print(f"burst {i}: HTTP {r.status_code} len={len(r.text)}", flush=True)
+    except Exception as e:
+        print(f"burst {i}: {e}")
+    time.sleep(10)
