@@ -1,43 +1,44 @@
-"""One-off probe: is Nintendo's store page cached, and what does the Zelda bundle's product record hold?"""
+"""One-off probe: fresh page vs cached page, and Nintendo's GraphQL API for live stock."""
 import json, re, time
 from curl_cffi import requests as http
 
-URL = "https://www.nintendo.com/us/store/products/nintendo-switch-2-the-legend-of-zelda-40th-anniversary-edition-121642/"
+SKU = "121642"
+URL = f"https://www.nintendo.com/us/store/products/nintendo-switch-2-the-legend-of-zelda-40th-anniversary-edition-{SKU}/"
 s = http.Session(impersonate="chrome")
-for i, u in enumerate([URL, URL, URL + f"?_={int(time.time())}", URL + f"?_={int(time.time())+1}"]):
+
+def page_state(u):
+    t = time.time()
     r = s.get(u, timeout=20)
-    hdr = {k: v for k, v in r.headers.items() if re.search(r"cache|age|date|etag|akamai|x-|cf-|server|vary|expires", k, re.I)}
-    print(i, u[-20:], r.status_code, len(r.text), json.dumps(hdr))
-    time.sleep(2)
-m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
-data = json.loads(m.group(1))
-pp = data["props"]["pageProps"]
-print("pageProps keys:", list(pp))
-print("buildId:", data.get("buildId"), "isFallback:", data.get("isFallback"), "gssp:", data.get("gssp"), "isr?", data.get("autoExport"))
-prod = pp["initialApolloState"].get('Product:{"sku":"121642"}')
-print("PRODUCT 121642:", json.dumps(prod)[:4000])
-print("linkedData:", json.dumps(pp.get("linkedData"))[:1500])
-print("analytics:", json.dumps(pp.get("analytics"))[:800])
-# graph endpoints / query names in page
-for h in sorted(set(re.findall(r'https://[a-z0-9.-]*graph[a-z0-9.-]*[^"\s]{0,80}', r.text)))[:20]:
-    print("graph url:", h)
-for h in sorted(set(re.findall(r'/_next/static/chunks/[^"]+\.js', r.text)))[:80]:
-    pass
-# scan JS chunks for graph endpoint and stock query names
-chunks = sorted(set(re.findall(r'/_next/static/[^"]+\.js', r.text)))
-print("chunks:", len(chunks))
-hits = set()
-for c in chunks:
-    try:
-        js = s.get("https://www.nintendo.com" + c, timeout=20).text
-    except Exception as e:
-        continue
-    for pat in [r'https://graph[a-z0-9.-]*nintendo[a-z0-9./-]*', r'isSalableQty[^;]{0,120}', r'sha256Hash["\']?\s*:\s*["\'][0-9a-f]{64}["\'][^;]{0,0}',
-                r'operationName["\']?\s*:\s*["\'][A-Za-z]+', r'[A-Za-z]*(Inventory|Stock|Salable)[A-Za-z]*Query']:
-        for x in re.findall(pat, js):
-            x = x if isinstance(x, str) else x
-            key = (c.split('/')[-1][:30], str(x)[:160])
-            if str(x)[:160] not in {h[1] for h in hits}:
-                hits.add(key)
-for h in sorted(hits)[:120]:
-    print("js:", h)
+    m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
+    pp = json.loads(m.group(1))["props"]["pageProps"]
+    p = pp["initialApolloState"].get(f'Product:{{"sku":"{SKU}"}}', {})
+    keep = {k: v for k, v in p.items() if not isinstance(v, (list, dict)) and not k.startswith("description")}
+    return (f"HTTP {r.status_code} {time.time()-t:.2f}s age={r.headers.get('x-cache-age')} cache={r.headers.get('x-cache')} "
+            f"linked={pp['linkedData'][0]['offers']['availability']} product={json.dumps(keep)[:1500]}")
+
+print("cached :", page_state(URL))
+print("fresh  :", page_state(URL + f"?q={time.time_ns()}"))
+
+# Pull the GraphQL documents the site ships, to copy the product query.
+r = s.get(URL + f"?q={time.time_ns()}", timeout=20)
+app = [c for c in re.findall(r'/_next/static/[^"]+\.js', r.text) if "_app-" in c][0]
+js = s.get("https://www.nintendo.com" + app, timeout=20).text
+docs = re.findall(r'(?:query|fragment) [A-Za-z]+[^`"]{0,40}', js)
+print("graphql docs:", sorted(set(d.split("(")[0].split("{")[0].strip() for d in docs))[:80])
+for m in re.finditer(r'"((?:query|fragment) (?:Product|StoreProduct|ProductBySku|ProductsBySku|ProductInventory|Cart)[^"]{0,3000})"', js):
+    print("DOC:", m.group(1)[:3000].replace("\\n", " "))
+
+GQL = "https://graph.nintendo.com/"
+q = """query P($sku: String!, $locale: Locale!) { product(sku: $sku, locale: $locale) { sku name isSalableQty soldOutPermanent
+  isPreorderable inviteRequired prePurchase releaseDate maxQtyAllowedInCart qtyAllowedPerCustomer requiresLogin
+  prices(personalized: false) { finalPrice regularPrice } } }"""
+for prof in ["chrome", "safari_ios"]:
+    for loc in ["en_US"]:
+        try:
+            t = time.time()
+            rr = http.post(GQL, impersonate=prof, timeout=20, json={"query": q, "variables": {"sku": SKU, "locale": loc}},
+                           headers={"Origin": "https://www.nintendo.com", "Referer": URL, "apollographql-client-name": "ncom"})
+            print(f"graph POST {prof}: HTTP {rr.status_code} {time.time()-t:.2f}s {rr.text[:1500]}")
+            print("   headers:", {k: v for k, v in rr.headers.items() if re.search('cache|age|x-', k, re.I)})
+        except Exception as e:
+            print("graph error", e)
