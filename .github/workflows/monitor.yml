@@ -1,4 +1,4 @@
-name: Restock monitor (PS5 Pro + Best Buy Xbox X25)
+name: Restock monitor (PS5 Pro Walmart + PlayStation Direct, Best Buy Xbox X25)
 
 on:
   # Each run watches for ~55 minutes, then starts the next run itself (last step),
@@ -43,16 +43,24 @@ jobs:
           path: bestbuy_state.txt
           key: bestbuy-state-v1-${{ github.run_id }}
           restore-keys: bestbuy-state-v1-
-      - name: Check every 15s for ~55 minutes
+      - name: Restore last PlayStation Direct status
+        uses: actions/cache/restore@v4
+        with:
+          path: psdirect_state.txt
+          key: psdirect-state-v1-${{ github.run_id }}
+          restore-keys: psdirect-state-v1-
+      - name: Check for ~55 minutes (PlayStation Direct every 10s, Walmart 15s, Best Buy 30s)
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_MENTION: ${{ vars.DISCORD_MENTION || '@everyone' }}
           CHECK_INTERVAL: "15"
           BESTBUY_INTERVAL: "30"
+          PSDIRECT_INTERVAL: "10"
           MAX_PRICE: ${{ vars.MAX_PRICE || '1000' }}
           RUN_FOR: ${{ inputs.run_for || '3300' }}
           STATE_FILE: state.txt
           BESTBUY_STATE_FILE: bestbuy_state.txt
+          PSDIRECT_STATE_FILE: psdirect_state.txt
         run: python monitor.py
       - name: Save last status
         if: always()
@@ -66,6 +74,12 @@ jobs:
         with:
           path: bestbuy_state.txt
           key: bestbuy-state-v1-${{ github.run_id }}
+      - name: Save last PlayStation Direct status
+        if: always() && hashFiles('psdirect_state.txt') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: psdirect_state.txt
+          key: psdirect-state-v1-${{ github.run_id }}
       - name: Start the next run
         # Skipped when you cancel a run by hand, so cancelling stops the chain.
         if: ${{ !cancelled() }}

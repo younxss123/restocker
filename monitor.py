@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restock monitor for the PS5 Pro (Walmart Business, New only) and the
+"""Restock monitor for the PS5 Pro (Walmart Business, New only; PlayStation Direct) and the
 Xbox Series X25 Special Edition (Best Buy, pre-order or in stock).
 
 Polls the product page, reads the "New" offer's availability and price from the
@@ -24,6 +24,15 @@ Env vars:
   BESTBUY_URL          the Best Buy page linked in the alert
   BESTBUY_STATE_FILE   like STATE_FILE, for Best Buy
   BESTBUY_INTERVAL     seconds from one Best Buy check to the next, +/-10% (default 30)
+  PSDIRECT_CODE        the PlayStation Direct product code to watch; set it empty to stop watching it
+  PSDIRECT_URL         the PlayStation Direct page linked in the alert
+  PSDIRECT_STATE_FILE  like STATE_FILE, for PlayStation Direct
+  PSDIRECT_INTERVAL    seconds from one PlayStation Direct check to the next, +/-10% (default 10)
+
+PlayStation Direct is read from the small product API its own product page calls
+to show "Currently Unavailable" or the Add button. It alerts, at any price, when
+the stock status stops being "outOfStock", or when the request gets sent to
+PlayStation's waiting room (direct-queue.playstation.com), which only switches on for a drop.
 """
 import json
 import os
@@ -32,7 +41,7 @@ import re
 import sys
 import time
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 # curl_cffi mimics a real browser's TLS fingerprint. Walmart's bot check lets the
 # mobile browser profiles through from cloud servers but blocks desktop ones.
@@ -70,6 +79,15 @@ BESTBUY_BROWSERS = ["chrome", "safari", "chrome_android", "safari_ios"]
 # Best Buy button states that mean you can't order it. Anything else (ADD_TO_CART,
 # PRE_ORDER, CHECK_STORES, or a state we haven't seen) counts as orderable, so a
 # real drop is never missed.
+PSDIRECT_NAME = "PS5 Pro"
+PSDIRECT_CODE = os.environ.get("PSDIRECT_CODE", "1000050805")
+PSDIRECT_URL = os.environ.get("PSDIRECT_URL",
+                              "https://direct.playstation.com/en-us/buy-consoles/playstation5-pro-console")
+PSDIRECT_STATE_FILE = os.environ.get("PSDIRECT_STATE_FILE", "")
+PSDIRECT_INTERVAL = int(os.environ.get("PSDIRECT_INTERVAL", "10"))
+PSDIRECT_API = ("https://api.direct.playstation.com/commercewebservices/ps-direct-us/users/anonymous/products/"
+                "productList?fields=BASIC&productCodes={}")
+PSDIRECT_BROWSERS = ["chrome", "safari", "chrome_android", "safari_ios"]
 BESTBUY_NOT_BUYABLE = {"COMING_SOON", "SOLD_OUT", "NOT_AVAILABLE", "UNAVAILABLE_NATIONWIDE", "TEMPORARILY_UNAVAILABLE"}
 
 
@@ -268,6 +286,70 @@ def bestbuy_fetch():
     return result
 
 
+def in_waiting_room(url):
+    """PlayStation's waiting room lives on its own host, e.g. direct-queue.playstation.com (queue-it)."""
+    return "queue" in urlparse(url or "").netloc.lower()
+
+
+def psdirect_parse(text, final_url="", code=None):
+    """Return (status, detail) from the PlayStation Direct product API, status as in parse().
+
+    The answer looks like (captured 2026-11-17):
+      {"products": [{"code": "1000050805", "name": "PlayStation®5 Pro Console", "loginGated": true,
+                     "price": {"value": 899, ...},
+                     "stock": {"isProductLowStock": false, "stockLevelStatus": "outOfStock"}}]}
+    """
+    code = str(code or PSDIRECT_CODE)
+    low = text.lower()
+    if in_waiting_room(final_url) or "queue-it" in low or "queueit" in low:
+        return "in", "PlayStation Direct sent the request to its waiting room (queue), so a drop is live"
+    if "<title>access denied" in low or "px-captcha" in low or "/_incapsula_" in low:
+        return "blocked", "bot check page"
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return "unknown", "PlayStation Direct answer wasn't JSON"
+    products = [d for d in walk(data) if str(d.get("code")) == code and isinstance(d.get("stock"), dict)]
+    if not products:
+        return "unknown", "stockLevelStatus not found in PlayStation Direct answer"
+    p = products[0]
+    stock = str(p["stock"].get("stockLevelStatus") or "").strip()
+    price = price_value((p.get("price") or {}).get("value"))
+    shown = f"stock: {stock or 'blank'}" + (f", {money(price)}" if price is not None else "")
+    if not stock:
+        return "unknown", shown
+    if stock.lower() in ("outofstock", "out_of_stock"):
+        return "out", shown
+    return "in", shown + (", sign in to buy" if p.get("loginGated") else "")
+
+
+_psdirect_session = None
+_psdirect_browser = 0
+
+
+def psdirect_fetch():
+    global _psdirect_session, _psdirect_browser
+    if _psdirect_session is None:
+        _psdirect_session = http.Session(impersonate=PSDIRECT_BROWSERS[_psdirect_browser % len(PSDIRECT_BROWSERS)])
+    r = _psdirect_session.get(f"{PSDIRECT_API.format(PSDIRECT_CODE)}&_={int(time.time())}", timeout=20,
+                              headers={"Referer": PSDIRECT_URL, "Origin": "https://direct.playstation.com",
+                                       "Accept": "application/json"})
+    if in_waiting_room(str(r.url)):
+        result = psdirect_parse(r.text, str(r.url))
+    elif r.status_code in (403, 429) or r.status_code >= 500:
+        result = "blocked", f"HTTP {r.status_code}"
+    else:
+        result = psdirect_parse(r.text, str(r.url))
+    if result[0] == "blocked":  # switch browser profile next time
+        _psdirect_browser += 1
+        _psdirect_session = None
+    return result
+
+
+def psdirect_alert_text(detail):
+    return f"🚨 **{PSDIRECT_NAME}: IN STOCK** on PlayStation Direct! ({detail})\n{PSDIRECT_URL}"
+
+
 def bestbuy_alert_text(detail):
     what = "PRE-ORDERS ARE OPEN" if detail.startswith("Pre-order") else "IN STOCK"
     return f"🚨 **{BESTBUY_NAME}: {what}** at Best Buy! ({detail})\n{BESTBUY_URL}"
@@ -283,7 +365,9 @@ def main():
         notify("Restock monitor test message: Discord alerts are working.")
         return
     if "--demo-alert" in sys.argv:
-        if "bestbuy" in sys.argv:
+        if "psdirect" in sys.argv:
+            sample = psdirect_alert_text("stock: inStock, $899, sign in to buy")
+        elif "bestbuy" in sys.argv:
             sample = bestbuy_alert_text('Orderable: button says "Add to Cart" (ADD_TO_CART)')
         else:
             sample = alert_text("New: IN_STOCK at $899.00")
@@ -293,6 +377,8 @@ def main():
         print("PS5 Pro:", fetch())
         if BESTBUY_SKU:
             print(f"{BESTBUY_NAME} (Best Buy):", bestbuy_fetch())
+        if PSDIRECT_CODE:
+            print(f"{PSDIRECT_NAME} (PlayStation Direct):", psdirect_fetch())
         return
     # Each product is checked on its own schedule with its own saved status,
     # so trouble with one store never delays or resets the others.
@@ -300,6 +386,9 @@ def main():
     if BESTBUY_SKU:
         watches.append(Watch(f"{BESTBUY_NAME} (Best Buy)", lambda: bestbuy_fetch(), bestbuy_alert_text,
                              BESTBUY_STATE_FILE, BESTBUY_URL, BESTBUY_INTERVAL))
+    if PSDIRECT_CODE:
+        watches.append(Watch(f"{PSDIRECT_NAME} (PlayStation Direct)", lambda: psdirect_fetch(), psdirect_alert_text,
+                             PSDIRECT_STATE_FILE, PSDIRECT_URL, PSDIRECT_INTERVAL))
     for w in watches:
         log(f"Watching {w.url} every ~{w.interval}s")
     deadline = time.time() + RUN_FOR if RUN_FOR else None
