@@ -1,47 +1,43 @@
-"""One-off probe: what does Nintendo's store page show a GitHub runner, and where is the stock status?"""
-import json, re, sys, time
+"""One-off probe: is Nintendo's store page cached, and what does the Zelda bundle's product record hold?"""
+import json, re, time
 from curl_cffi import requests as http
 
 URL = "https://www.nintendo.com/us/store/products/nintendo-switch-2-the-legend-of-zelda-40th-anniversary-edition-121642/"
-PAT = re.compile(r"stock|avail|salab|sales|purchas|cart|sku|nsuid|order|release|status|price|restrict|inventory|qty|limit", re.I)
-
-def walk(node, path=""):
-    if isinstance(node, dict):
-        for k, v in node.items():
-            p = f"{path}.{k}"
-            if PAT.search(k) and not isinstance(v, (dict, list)):
-                yield p, v
-            yield from walk(v, p)
-    elif isinstance(node, list):
-        for i, v in enumerate(node):
-            yield from walk(v, f"{path}[{i}]")
-
-best = None
-for prof in ["chrome", "safari", "chrome_android", "safari_ios", "firefox"]:
-    try:
-        t = time.time()
-        r = http.get(URL, impersonate=prof, timeout=20)
-        m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
-        print(f"{prof}: HTTP {r.status_code} len={len(r.text)} {time.time()-t:.2f}s next_data={bool(m)} final={r.url}", flush=True)
-        if m and not best:
-            best = (r, m)
-        if not m:
-            print("  head:", repr(r.text[:300]))
-    except Exception as e:
-        print(f"{prof}: error {e}")
-if not best:
-    sys.exit("no __NEXT_DATA__")
-r, m = best
+s = http.Session(impersonate="chrome")
+for i, u in enumerate([URL, URL, URL + f"?_={int(time.time())}", URL + f"?_={int(time.time())+1}"]):
+    r = s.get(u, timeout=20)
+    hdr = {k: v for k, v in r.headers.items() if re.search(r"cache|age|date|etag|akamai|x-|cf-|server|vary|expires", k, re.I)}
+    print(i, u[-20:], r.status_code, len(r.text), json.dumps(hdr))
+    time.sleep(2)
+m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
 data = json.loads(m.group(1))
-seen = set()
-for p, v in walk(data):
-    short = re.sub(r"\[\d+\]", "[]", p)
-    key = (short, str(v)[:80])
-    if key in seen: continue
-    seen.add(key)
-    print(f"{p} = {str(v)[:160]!r}")
-for word in ["Add to cart", "Out of stock", "Sold out", "Coming soon", "Notify me", "Currently unavailable", "Pre-order", "Not available"]:
-    print(f"text {word!r}: {r.text.lower().count(word.lower())}")
-# Look for graph API / apollo hints
-for h in sorted(set(re.findall(r'https://[a-z0-9.-]*nintendo[a-z0-9.-]*/[a-zA-Z0-9_/.-]{0,60}', r.text)))[:40]:
-    print("url:", h)
+pp = data["props"]["pageProps"]
+print("pageProps keys:", list(pp))
+print("buildId:", data.get("buildId"), "isFallback:", data.get("isFallback"), "gssp:", data.get("gssp"), "isr?", data.get("autoExport"))
+prod = pp["initialApolloState"].get('Product:{"sku":"121642"}')
+print("PRODUCT 121642:", json.dumps(prod)[:4000])
+print("linkedData:", json.dumps(pp.get("linkedData"))[:1500])
+print("analytics:", json.dumps(pp.get("analytics"))[:800])
+# graph endpoints / query names in page
+for h in sorted(set(re.findall(r'https://[a-z0-9.-]*graph[a-z0-9.-]*[^"\s]{0,80}', r.text)))[:20]:
+    print("graph url:", h)
+for h in sorted(set(re.findall(r'/_next/static/chunks/[^"]+\.js', r.text)))[:80]:
+    pass
+# scan JS chunks for graph endpoint and stock query names
+chunks = sorted(set(re.findall(r'/_next/static/[^"]+\.js', r.text)))
+print("chunks:", len(chunks))
+hits = set()
+for c in chunks:
+    try:
+        js = s.get("https://www.nintendo.com" + c, timeout=20).text
+    except Exception as e:
+        continue
+    for pat in [r'https://graph[a-z0-9.-]*nintendo[a-z0-9./-]*', r'isSalableQty[^;]{0,120}', r'sha256Hash["\']?\s*:\s*["\'][0-9a-f]{64}["\'][^;]{0,0}',
+                r'operationName["\']?\s*:\s*["\'][A-Za-z]+', r'[A-Za-z]*(Inventory|Stock|Salable)[A-Za-z]*Query']:
+        for x in re.findall(pat, js):
+            x = x if isinstance(x, str) else x
+            key = (c.split('/')[-1][:30], str(x)[:160])
+            if str(x)[:160] not in {h[1] for h in hits}:
+                hits.add(key)
+for h in sorted(hits)[:120]:
+    print("js:", h)
