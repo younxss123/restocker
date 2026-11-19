@@ -74,7 +74,7 @@ def alerts(seq, last=None):
         return seq.pop(0)
 
     sent = []
-    monitor.BESTBUY_SKU = ""  # PS5 only here; both stores together are tested below
+    monitor.BESTBUY_SKU = monitor.PSDIRECT_CODE = ""  # Walmart only here; stores together are tested below
     monitor.fetch, monitor.notify, monitor.log = fake_fetch, sent.append, lambda m: None
     monitor.time.sleep = lambda s: None
     try:
@@ -152,6 +152,7 @@ def both(ps5_seq, bb_seq, run_for=1000):
     def sleep(s):
         clock[0] += max(s, 0)
     monitor.BESTBUY_SKU, monitor.RUN_FOR, monitor.STATE_FILE, monitor.BESTBUY_STATE_FILE = "6690019", run_for, "", ""
+    monitor.PSDIRECT_CODE = ""
     monitor.INTERVAL, monitor.BESTBUY_INTERVAL = 15, 30
     monitor.fetch = lambda: take(ps5_seq, "ps5", ("out", "x"))
     monitor.bestbuy_fetch = lambda: take(bb_seq, "bestbuy", ("out", "SOLD_OUT"))
@@ -177,4 +178,61 @@ print(f"{'ok  ' if ok else 'FAIL'} PS5 blocked backoff doesn't slow Best Buy: ch
 ok = any(m.startswith("⚠️ PS5 Pro") for m in sent) and not any("Best Buy" in m for m in sent)
 failed += not ok
 print(f"{'ok  ' if ok else 'FAIL'} trouble warning names the product")
+
+
+def psdirect_answer(stock, code="1000050805", price=899):
+    """Shaped like the live productList answer (captured 2026-11-17: outOfStock)."""
+    return json.dumps({"currentPage": 0, "products": [{
+        "baseProduct": f"{code}Base", "code": code, "name": "PlayStation®5 Pro Console", "loginGated": True,
+        "categoryHierarchy": [{"code": "SIECategory110", "name": "PS5 Consoles"}],
+        "price": {"basePrice": str(price), "currencyIso": "USD", "value": price}, "purchasable": True,
+        "stock": {"isProductLowStock": stock == "lowStock", "stockLevelStatus": stock}}]})
+
+
+monitor.PSDIRECT_CODE = "1000050805"
+psdirect_cases = [
+    ("psdirect live today: out of stock", psdirect_answer("outOfStock"), "", "out"),
+    ("psdirect in stock", psdirect_answer("inStock"), "", "in"),
+    ("psdirect low stock", psdirect_answer("lowStock"), "", "in"),
+    ("psdirect other product ignored", psdirect_answer("inStock", code="1000041051"), "", "unknown"),
+    ("psdirect blank stock", psdirect_answer(""), "", "unknown"),
+    ("psdirect not JSON", "<html>Oops</html>", "", "unknown"),
+    ("psdirect Access Denied", "<html><title>Access Denied</title></html>", "", "blocked"),
+    ("psdirect waiting room", "<html>queue</html>",
+     "https://direct-queue.playstation.com/?c=sonyied&e=psdirectprodku1", "in"),
+]
+for name, text, url, want in psdirect_cases:
+    got = monitor.psdirect_parse(text, url)
+    ok = got[0] == want
+    failed += not ok
+    print(f"{'ok  ' if ok else 'FAIL'} {name}: {got}")
+print("sample psdirect alert:", monitor.psdirect_alert_text(monitor.psdirect_parse(
+    psdirect_answer("inStock"))[1]).splitlines()[0])
+
+# All three stores together: PlayStation Direct every ~10s, alerts once, and doesn't slow the others.
+ps_seq = [("out", "stock: outOfStock")] * 5 + [("in", "stock: inStock, $899")] * 5
+psd_count = [0]
+
+
+def fake_psd():
+    psd_count[0] += 1
+    return ps_seq.pop(0) if ps_seq else ("out", "stock: outOfStock")
+
+
+monitor.psdirect_fetch = fake_psd
+orig_main_code = "1000050805"
+sent, clock = [], [0.0]
+monitor.BESTBUY_SKU, monitor.RUN_FOR, monitor.PSDIRECT_CODE, monitor.PSDIRECT_INTERVAL = "6690019", 1000, orig_main_code, 10
+monitor.PSDIRECT_STATE_FILE = ""
+monitor.fetch = lambda: ("out", "x")
+monitor.bestbuy_fetch = lambda: ("out", "SOLD_OUT")
+monitor.notify, monitor.log = sent.append, lambda m: None
+monitor.time.sleep = lambda s: clock.__setitem__(0, clock[0] + max(s, 0))
+monitor.time.time = lambda: clock[0]
+monitor.main()
+psd_alerts = [m for m in sent if "PlayStation Direct" in m]
+ok = len(psd_alerts) == 1 and 90 <= psd_count[0] <= 112 and len(sent) == 1
+failed += not ok
+print(f"{'ok  ' if ok else 'FAIL'} PlayStation Direct checked every ~10s and alerts once: "
+      f"checks={psd_count[0]} alerts={len(psd_alerts)}")
 sys.exit(1 if failed else 0)
