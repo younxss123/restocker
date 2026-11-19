@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Restock monitor for the PS5 Pro (Walmart Business, New only; PlayStation Direct), the
 Xbox Series X25 Special Edition (Best Buy, pre-order or in stock) and the
-Nintendo Switch 2 Zelda 40th Anniversary Edition (Nintendo Store).
+Nintendo Switch 2 Zelda 40th Anniversary Edition (Nintendo Store) and the
+LEGO Star Wars Gingerbread AT-AT 40806 (Walmart Business, New under $30).
 
 Polls the product page, reads the "New" offer's availability and price from the
 page's embedded __NEXT_DATA__ JSON, and posts to a Discord webhook when it becomes
@@ -43,6 +44,11 @@ PlayStation's waiting room (direct-queue.playstation.com), which only switches o
 The Nintendo Store page carries the same "isSalableQty" flag its Add to Cart button
 uses. Nintendo's CDN can serve a copy of the page that is 10+ minutes old, so each
 check adds a unique query string to get a fresh copy straight from Nintendo.
+
+  LEGO_URL             the Walmart Business LEGO 40806 page; set it empty to stop watching it
+  LEGO_MAX_PRICE       only alert when its New price is below this (default 30)
+  LEGO_STATE_FILE      like STATE_FILE, for the LEGO set
+  LEGO_INTERVAL        seconds from one LEGO check to the next, +/-10% (default 15)
 """
 import json
 import os
@@ -76,6 +82,24 @@ try:
 except ValueError:
     MAX_PRICE = 1000.0
 IN_STOCK = {"IN_STOCK", "AVAILABLE", "LIMITED_STOCK"}
+
+
+def price_env(name, default):
+    """Accept "40", "$40" or "39.99"; anything else falls back to the default."""
+    try:
+        return float(re.sub(r"[$,\s]", "", os.environ.get(name, "")) or default)
+    except ValueError:
+        return float(default)
+
+
+# A second Walmart Business item, read the same way as the PS5 Pro. Walmart sells it
+# itself for $28 (list $72.95); marketplace resellers start around $69, so only a
+# price under LEGO_MAX_PRICE counts as a real restock.
+LEGO_NAME = "LEGO Star Wars Gingerbread AT-AT (40806)"
+LEGO_URL = os.environ.get("LEGO_URL", "https://business.walmart.com/ip/18051805903")
+LEGO_STATE_FILE = os.environ.get("LEGO_STATE_FILE", "")
+LEGO_INTERVAL = int(os.environ.get("LEGO_INTERVAL", "15"))
+LEGO_MAX_PRICE = price_env("LEGO_MAX_PRICE", 30)
 
 BESTBUY_NAME = "Xbox Series X25 Special Edition"
 BESTBUY_SKU = os.environ.get("BESTBUY_SKU", "6690019")
@@ -144,22 +168,23 @@ def money(x):
     return f"${x:,.0f}" if x == int(x) else f"${x:,.2f}"
 
 
-def judge(st, price):
+def judge(st, price, max_price=None):
     """Turn a New offer's stock status and price into (status, detail).
 
     'in' means in stock AND under MAX_PRICE, which is the only thing worth an alert.
     A missing price still counts as 'in' so a real restock is never skipped.
     """
+    max_price = MAX_PRICE if max_price is None else max_price
     if st not in IN_STOCK:
         return "out", f"New: {st}"
     if price is None:
         return "in", "New: IN_STOCK, price not shown"
-    if price < MAX_PRICE:
+    if price < max_price:
         return "in", f"New: IN_STOCK at ${price:,.2f}"
-    return "out", f"New: IN_STOCK at ${price:,.2f}, not under {money(MAX_PRICE)}"
+    return "out", f"New: IN_STOCK at ${price:,.2f}, not under {money(max_price)}"
 
 
-def parse(html):
+def parse(html, max_price=None):
     """Return (status, detail). status is 'in', 'out', 'blocked' or 'unknown'."""
     low = html.lower()
     if "robot or human" in low or "px-captcha" in low or "/blocked?" in low:
@@ -188,7 +213,7 @@ def parse(html):
         price = price_value(d.get("price"))
         if price is None and d.get("offerId") == product.get("selectedOfferId"):
             price = page_price  # the page's headline price belongs to the selected offer
-        results.append(judge(st, price))
+        results.append(judge(st, price, max_price))
     if results:
         # Any qualifying New offer wins; otherwise report the first one.
         return next((r for r in results if r[0] == "in"), results[0])
@@ -199,7 +224,7 @@ def parse(html):
     if product.get("isConditionNew") is not False and product.get("selectedOfferId") not in not_new_ids - {None}:
         st = status_value(product.get("availabilityStatus"))
         if st:
-            return judge(st, page_price)
+            return judge(st, page_price, max_price)
     return "unknown", "availabilityStatus not found"
 
 
@@ -215,17 +240,19 @@ def new_session():
     time.sleep(2)
 
 
-def fetch():
+def fetch(product_url=None, max_price=None):
+    """Check a Walmart Business page (the PS5 Pro unless another URL is given)."""
     global _browser
     if _session is None:
         new_session()
-    sep = "&" if "?" in PRODUCT_URL else "?"
-    url = f"{PRODUCT_URL}{sep}_={int(time.time())}"  # cache buster
+    product_url = product_url or PRODUCT_URL
+    sep = "&" if "?" in product_url else "?"
+    url = f"{product_url}{sep}_={int(time.time())}"  # cache buster
     r = _session.get(url, timeout=20, headers={"Referer": HOME_URL})
     if r.status_code in (403, 429) or r.status_code >= 500:
         result = "blocked", f"HTTP {r.status_code}"
     else:
-        result = parse(r.text)
+        result = parse(r.text, max_price)
     if result[0] == "blocked":  # switch browser profile and start over next time
         _browser += 1
         new_session()
@@ -452,6 +479,11 @@ def bestbuy_alert_text(detail):
     return f"🚨 **{BESTBUY_NAME}: {what}** at Best Buy! ({detail})\n{BESTBUY_URL}"
 
 
+def lego_alert_text(detail):
+    return (f"🚨 **{LEGO_NAME} is IN STOCK under {money(LEGO_MAX_PRICE)}** on Walmart Business! "
+            f"({detail})\n{LEGO_URL}")
+
+
 def alert_text(detail):
     return (f"🚨 **PS5 Pro (New) is IN STOCK under {money(MAX_PRICE)}** on Walmart Business! "
             f"({detail})\n{PRODUCT_URL}")
@@ -462,7 +494,9 @@ def main():
         notify("Restock monitor test message: Discord alerts are working.")
         return
     if "--demo-alert" in sys.argv:
-        if "nintendo" in sys.argv:
+        if "lego" in sys.argv:
+            sample = lego_alert_text("New: IN_STOCK at $28.00")
+        elif "nintendo" in sys.argv:
             sample = nintendo_alert_text("isSalableQty: True, $519.99")
         elif "psdirect" in sys.argv:
             sample = psdirect_alert_text("stock: inStock, $899, sign in to buy")
@@ -480,6 +514,8 @@ def main():
             print(f"{PSDIRECT_NAME} (PlayStation Direct):", psdirect_fetch())
         if NINTENDO_SKU:
             print(f"{NINTENDO_NAME} (Nintendo Store):", nintendo_fetch())
+        if LEGO_URL:
+            print(f"{LEGO_NAME}:", fetch(LEGO_URL, LEGO_MAX_PRICE))
         return
     # Each product is checked on its own schedule with its own saved status,
     # so trouble with one store never delays or resets the others.
@@ -493,6 +529,9 @@ def main():
     if NINTENDO_SKU:
         watches.append(Watch(f"{NINTENDO_NAME} (Nintendo Store)", lambda: nintendo_fetch(), nintendo_alert_text,
                              NINTENDO_STATE_FILE, NINTENDO_URL, NINTENDO_INTERVAL))
+    if LEGO_URL:
+        watches.append(Watch(LEGO_NAME, lambda: fetch(LEGO_URL, LEGO_MAX_PRICE), lego_alert_text,
+                             LEGO_STATE_FILE, LEGO_URL, LEGO_INTERVAL))
     for w in watches:
         log(f"Watching {w.url} every ~{w.interval}s")
     deadline = time.time() + RUN_FOR if RUN_FOR else None

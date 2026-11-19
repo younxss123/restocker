@@ -74,7 +74,7 @@ def alerts(seq, last=None):
         return seq.pop(0)
 
     sent = []
-    monitor.BESTBUY_SKU = monitor.PSDIRECT_CODE = monitor.NINTENDO_SKU = ""  # Walmart only here; stores together are tested below
+    monitor.BESTBUY_SKU = monitor.PSDIRECT_CODE = monitor.NINTENDO_SKU = monitor.LEGO_URL = ""  # Walmart only here; stores together are tested below
     monitor.fetch, monitor.notify, monitor.log = fake_fetch, sent.append, lambda m: None
     monitor.time.sleep = lambda s: None
     try:
@@ -152,7 +152,7 @@ def both(ps5_seq, bb_seq, run_for=1000):
     def sleep(s):
         clock[0] += max(s, 0)
     monitor.BESTBUY_SKU, monitor.RUN_FOR, monitor.STATE_FILE, monitor.BESTBUY_STATE_FILE = "6690019", run_for, "", ""
-    monitor.PSDIRECT_CODE = monitor.NINTENDO_SKU = ""
+    monitor.PSDIRECT_CODE = monitor.NINTENDO_SKU = monitor.LEGO_URL = ""
     monitor.INTERVAL, monitor.BESTBUY_INTERVAL = 15, 30
     monitor.fetch = lambda: take(ps5_seq, "ps5", ("out", "x"))
     monitor.bestbuy_fetch = lambda: take(bb_seq, "bestbuy", ("out", "SOLD_OUT"))
@@ -297,4 +297,63 @@ ok = len(nin_alerts) == 1 and 90 <= nin_count[0] <= 112 and 90 <= psd_count[0] <
 failed += not ok
 print(f"{'ok  ' if ok else 'FAIL'} Nintendo checked every ~10s next to PlayStation Direct and alerts once: "
       f"checks={nin_count[0]} psdirect={psd_count[0]} alerts={len(nin_alerts)}")
+# LEGO 40806 on Walmart Business: same page format as the PS5, its own $30 limit.
+LEGO_WALMART, LEGO_RESELLER = "LEGOWMT", "LEGORESELL"
+lego_cases = [
+    ("lego sold by Walmart at $28", page([offer(LEGO_WALMART, True, "IN_STOCK", 28)], LEGO_WALMART, "IN_STOCK", 28),
+     "in"),
+    ("lego only resellers at $68.99",
+     page([offer(LEGO_RESELLER, True, "IN_STOCK", 68.99)], LEGO_RESELLER, "IN_STOCK", 68.99), "out"),
+    ("lego out of stock", page([offer(LEGO_WALMART, True, "OUT_OF_STOCK", 28)], LEGO_WALMART, "OUT_OF_STOCK", 28),
+     "out"),
+    ("lego page without conditionOffers at $28", page([], None, "IN_STOCK", 28), "in"),
+    ("lego at $30 is not under $30", page([offer(LEGO_WALMART, True, "IN_STOCK", 30)], LEGO_WALMART, "IN_STOCK", 30),
+     "out"),
+    ("lego at $34.99 is over", page([offer(LEGO_WALMART, True, "IN_STOCK", 34.99)], LEGO_WALMART, "IN_STOCK", 34.99),
+     "out"),
+]
+for name, html, want in lego_cases:
+    got = monitor.parse(html, 30)
+    ok = got[0] == want
+    failed += not ok
+    print(f"{'ok  ' if ok else 'FAIL'} {name}: {got}")
+ok = monitor.parse(page([offer(LEGO_WALMART, True, "IN_STOCK", 899)], LEGO_WALMART, "IN_STOCK", 899))[0] == "in"
+failed += not ok
+print(f"{'ok  ' if ok else 'FAIL'} PS5 still uses its own $1,000 limit")
+
+# Everything together: the LEGO page is checked every ~15s alongside the others and alerts once.
+sent, clock = [], [0.0]
+counts = {"ps5": 0, "lego": 0, "bestbuy": 0, "psdirect": 0, "nintendo": 0}
+lego_seq = [("out", "New: OUT_OF_STOCK")] * 4 + [("in", "New: IN_STOCK at $28.00")] * 4
+
+
+def count(key, result):
+    counts[key] += 1
+    return result
+
+
+def walmart(url=None, max_price=None):
+    if url == monitor.LEGO_URL:
+        assert max_price == monitor.LEGO_MAX_PRICE
+        return count("lego", lego_seq.pop(0) if lego_seq else ("out", "x"))
+    return count("ps5", ("out", "x"))
+
+
+monitor.LEGO_URL, monitor.LEGO_STATE_FILE, monitor.LEGO_INTERVAL = "https://business.walmart.com/ip/18051805903", "", 15
+monitor.STATE_FILE = monitor.BESTBUY_STATE_FILE = monitor.PSDIRECT_STATE_FILE = monitor.NINTENDO_STATE_FILE = ""
+monitor.BESTBUY_SKU, monitor.PSDIRECT_CODE, monitor.NINTENDO_SKU = "6690019", "1000050805", "121642"
+monitor.INTERVAL, monitor.RUN_FOR = 15, 1000
+monitor.fetch = walmart
+monitor.bestbuy_fetch = lambda: count("bestbuy", ("out", "SOLD_OUT"))
+monitor.psdirect_fetch = lambda: count("psdirect", ("out", "stock: outOfStock"))
+monitor.nintendo_fetch = lambda: count("nintendo", ("out", "isSalableQty: False"))
+monitor.notify, monitor.log = sent.append, lambda m: None
+monitor.time.sleep = lambda s: clock.__setitem__(0, clock[0] + max(s, 0))
+monitor.time.time = lambda: clock[0]
+monitor.main()
+ok = (len(sent) == 1 and "Gingerbread AT-AT" in sent[0] and "under $30" in sent[0]
+      and 60 <= counts["lego"] <= 75 and 60 <= counts["ps5"] <= 75 and 90 <= counts["nintendo"] <= 112)
+failed += not ok
+print(f"{'ok  ' if ok else 'FAIL'} LEGO alerts once, every ~15s, alongside the others: checks={counts}")
+print("sample lego alert:", monitor.lego_alert_text("New: IN_STOCK at $28.00").splitlines()[0])
 sys.exit(1 if failed else 0)
