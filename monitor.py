@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Restock monitor for the PS5 Pro (Walmart Business, New only; PlayStation Direct) and the
-Xbox Series X25 Special Edition (Best Buy, pre-order or in stock).
+"""Restock monitor for the PS5 Pro (Walmart Business, New only; PlayStation Direct), the
+Xbox Series X25 Special Edition (Best Buy, pre-order or in stock) and the
+Nintendo Switch 2 Zelda 40th Anniversary Edition (Nintendo Store).
 
 Polls the product page, reads the "New" offer's availability and price from the
 page's embedded __NEXT_DATA__ JSON, and posts to a Discord webhook when it becomes
@@ -33,6 +34,15 @@ PlayStation Direct is read from the small product API its own product page calls
 to show "Currently Unavailable" or the Add button. It alerts, at any price, when
 the stock status stops being "outOfStock", or when the request gets sent to
 PlayStation's waiting room (direct-queue.playstation.com), which only switches on for a drop.
+
+  NINTENDO_SKU         the Nintendo Store SKU to watch; set it empty to stop watching it
+  NINTENDO_URL         the Nintendo Store page to read and link in the alert
+  NINTENDO_STATE_FILE  like STATE_FILE, for the Nintendo Store
+  NINTENDO_INTERVAL    seconds from one Nintendo Store check to the next, +/-10% (default 10)
+
+The Nintendo Store page carries the same "isSalableQty" flag its Add to Cart button
+uses. Nintendo's CDN can serve a copy of the page that is 10+ minutes old, so each
+check adds a unique query string to get a fresh copy straight from Nintendo.
 """
 import json
 import os
@@ -88,6 +98,14 @@ PSDIRECT_INTERVAL = int(os.environ.get("PSDIRECT_INTERVAL", "10"))
 PSDIRECT_API = ("https://api.direct.playstation.com/commercewebservices/ps-direct-us/users/anonymous/products/"
                 "productList?fields=BASIC&productCodes={}")
 PSDIRECT_BROWSERS = ["chrome", "safari", "chrome_android", "safari_ios"]
+NINTENDO_NAME = "Switch 2 Zelda 40th Anniversary Edition"
+NINTENDO_SKU = os.environ.get("NINTENDO_SKU", "121642")
+NINTENDO_URL = os.environ.get(
+    "NINTENDO_URL",
+    "https://www.nintendo.com/us/store/products/nintendo-switch-2-the-legend-of-zelda-40th-anniversary-edition-121642/")
+NINTENDO_STATE_FILE = os.environ.get("NINTENDO_STATE_FILE", "")
+NINTENDO_INTERVAL = int(os.environ.get("NINTENDO_INTERVAL", "10"))
+NINTENDO_BROWSERS = ["chrome", "safari", "chrome_android", "safari_ios"]
 BESTBUY_NOT_BUYABLE = {"COMING_SOON", "SOLD_OUT", "NOT_AVAILABLE", "UNAVAILABLE_NATIONWIDE", "TEMPORARILY_UNAVAILABLE"}
 
 
@@ -346,6 +364,85 @@ def psdirect_fetch():
     return result
 
 
+def nintendo_parse(html, final_url="", sku=None):
+    """Return (status, detail) from a Nintendo Store product page, status as in parse().
+
+    The page's __NEXT_DATA__ holds (captured 2026-11-17):
+      props.pageProps.initialApolloState['Product:{"sku":"121642"}'] =
+          {"isSalableQty": false, "soldOutPermanent": null, "maxQtyAllowedInCart": 2,
+           "prices({\"personalized\":false})": {"finalPrice": 519.99, ...}, ...}
+      props.pageProps.linkedData[0].offers.availability = "https://schema.org/OutOfStock"
+    isSalableQty is what enables the Add to Cart button; linkedData is only a fallback.
+    """
+    sku = str(sku or NINTENDO_SKU)
+    low = html.lower()
+    # Only the address counts here: the normal page is large enough to mention "queue" anywhere.
+    if in_waiting_room(final_url):
+        return "in", "Nintendo sent the request to its waiting room (queue), so a drop is live"
+    m = re.search(r'<script[^>]*id=["\']?__NEXT_DATA__["\']?[^>]*>(.*?)</script>', html, re.S)
+    if not m:
+        if "access denied" in low or "captcha" in low or "request unsuccessful" in low:
+            return "blocked", "bot check page"
+        return "unknown", "no __NEXT_DATA__ in Nintendo page"
+    try:
+        props = json.loads(m.group(1))["props"]["pageProps"]
+    except (ValueError, KeyError, TypeError):
+        return "unknown", "Nintendo page data unreadable"
+    apollo = props.get("initialApolloState") or {}
+    product = apollo.get(f'Product:{{"sku":"{sku}"}}') or {}
+    price = None
+    for k, v in product.items():
+        if k.startswith("prices") and isinstance(v, dict):
+            price = price_value(v.get("finalPrice"))
+    availability = ""
+    for d in props.get("linkedData") or []:
+        if isinstance(d, dict) and str(d.get("sku")) == sku and isinstance(d.get("offers"), dict):
+            availability = str(d["offers"].get("availability") or "").rsplit("/", 1)[-1]
+            if price is None:
+                price = price_value(d["offers"].get("price"))
+    salable = product.get("isSalableQty")
+    shown = f"isSalableQty: {salable}" if salable is not None else f"availability: {availability or 'blank'}"
+    shown += f", {money(price)}" if price is not None else ""
+    if product.get("soldOutPermanent"):
+        return "out", shown + ", sold out permanently"
+    if salable is True:
+        return "in", shown
+    if salable is False:
+        return "out", shown
+    if availability in ("InStock", "PreOrder", "LimitedAvailability", "OnlineOnly", "PreSale"):
+        return "in", shown
+    if availability in ("OutOfStock", "SoldOut", "Discontinued", "BackOrder"):
+        return "out", shown
+    return "unknown", f"stock flag not found for SKU {sku} ({shown})"
+
+
+_nintendo_session = None
+_nintendo_browser = 0
+
+
+def nintendo_fetch():
+    global _nintendo_session, _nintendo_browser
+    if _nintendo_session is None:
+        _nintendo_session = http.Session(impersonate=NINTENDO_BROWSERS[_nintendo_browser % len(NINTENDO_BROWSERS)])
+    # Unique query string: skips Nintendo's CDN copy, which can be 10+ minutes old.
+    sep = "&" if "?" in NINTENDO_URL else "?"
+    r = _nintendo_session.get(f"{NINTENDO_URL}{sep}_={time.time_ns()}", timeout=20)
+    if in_waiting_room(str(r.url)):
+        result = nintendo_parse(r.text, str(r.url))
+    elif r.status_code in (403, 429) or r.status_code >= 500:
+        result = "blocked", f"HTTP {r.status_code}"
+    else:
+        result = nintendo_parse(r.text, str(r.url))
+    if result[0] == "blocked":  # switch browser profile next time
+        _nintendo_browser += 1
+        _nintendo_session = None
+    return result
+
+
+def nintendo_alert_text(detail):
+    return f"🚨 **{NINTENDO_NAME}: IN STOCK** on the Nintendo Store! ({detail})\n{NINTENDO_URL}"
+
+
 def psdirect_alert_text(detail):
     return f"🚨 **{PSDIRECT_NAME}: IN STOCK** on PlayStation Direct! ({detail})\n{PSDIRECT_URL}"
 
@@ -365,7 +462,9 @@ def main():
         notify("Restock monitor test message: Discord alerts are working.")
         return
     if "--demo-alert" in sys.argv:
-        if "psdirect" in sys.argv:
+        if "nintendo" in sys.argv:
+            sample = nintendo_alert_text("isSalableQty: True, $519.99")
+        elif "psdirect" in sys.argv:
             sample = psdirect_alert_text("stock: inStock, $899, sign in to buy")
         elif "bestbuy" in sys.argv:
             sample = bestbuy_alert_text('Orderable: button says "Add to Cart" (ADD_TO_CART)')
@@ -379,6 +478,8 @@ def main():
             print(f"{BESTBUY_NAME} (Best Buy):", bestbuy_fetch())
         if PSDIRECT_CODE:
             print(f"{PSDIRECT_NAME} (PlayStation Direct):", psdirect_fetch())
+        if NINTENDO_SKU:
+            print(f"{NINTENDO_NAME} (Nintendo Store):", nintendo_fetch())
         return
     # Each product is checked on its own schedule with its own saved status,
     # so trouble with one store never delays or resets the others.
@@ -389,6 +490,9 @@ def main():
     if PSDIRECT_CODE:
         watches.append(Watch(f"{PSDIRECT_NAME} (PlayStation Direct)", lambda: psdirect_fetch(), psdirect_alert_text,
                              PSDIRECT_STATE_FILE, PSDIRECT_URL, PSDIRECT_INTERVAL))
+    if NINTENDO_SKU:
+        watches.append(Watch(f"{NINTENDO_NAME} (Nintendo Store)", lambda: nintendo_fetch(), nintendo_alert_text,
+                             NINTENDO_STATE_FILE, NINTENDO_URL, NINTENDO_INTERVAL))
     for w in watches:
         log(f"Watching {w.url} every ~{w.interval}s")
     deadline = time.time() + RUN_FOR if RUN_FOR else None
