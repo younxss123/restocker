@@ -1,4 +1,4 @@
-name: Restock monitor (PS5 Pro Walmart + PlayStation Direct, Best Buy Xbox X25)
+name: Restock monitor (PS5 Pro Walmart + PlayStation Direct, Best Buy Xbox X25, Nintendo Zelda Switch 2, LEGO AT-AT)
 
 on:
   # Each run watches for ~55 minutes, then starts the next run itself (last step),
@@ -49,18 +49,35 @@ jobs:
           path: psdirect_state.txt
           key: psdirect-state-v1-${{ github.run_id }}
           restore-keys: psdirect-state-v1-
-      - name: Check for ~55 minutes (PlayStation Direct every 10s, Walmart 15s, Best Buy 30s)
+      - name: Restore last Nintendo Store status
+        uses: actions/cache/restore@v4
+        with:
+          path: nintendo_state.txt
+          key: nintendo-state-v1-${{ github.run_id }}
+          restore-keys: nintendo-state-v1-
+      - name: Restore last LEGO status
+        uses: actions/cache/restore@v4
+        with:
+          path: lego_state.txt
+          key: lego-state-v1-${{ github.run_id }}
+          restore-keys: lego-state-v1-
+      - name: Check for ~55 minutes (PlayStation Direct and Nintendo every 10s, Walmart PS5 and LEGO 15s, Best Buy 30s)
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_MENTION: ${{ vars.DISCORD_MENTION || '@everyone' }}
           CHECK_INTERVAL: "15"
           BESTBUY_INTERVAL: "30"
           PSDIRECT_INTERVAL: "10"
+          NINTENDO_INTERVAL: "10"
+          LEGO_INTERVAL: "15"
+          LEGO_MAX_PRICE: ${{ vars.LEGO_MAX_PRICE || '30' }}
           MAX_PRICE: ${{ vars.MAX_PRICE || '1000' }}
           RUN_FOR: ${{ inputs.run_for || '3300' }}
           STATE_FILE: state.txt
           BESTBUY_STATE_FILE: bestbuy_state.txt
           PSDIRECT_STATE_FILE: psdirect_state.txt
+          NINTENDO_STATE_FILE: nintendo_state.txt
+          LEGO_STATE_FILE: lego_state.txt
         run: python monitor.py
       - name: Save last status
         if: always()
@@ -80,6 +97,18 @@ jobs:
         with:
           path: psdirect_state.txt
           key: psdirect-state-v1-${{ github.run_id }}
+      - name: Save last Nintendo Store status
+        if: always() && hashFiles('nintendo_state.txt') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: nintendo_state.txt
+          key: nintendo-state-v1-${{ github.run_id }}
+      - name: Save last LEGO status
+        if: always() && hashFiles('lego_state.txt') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: lego_state.txt
+          key: lego-state-v1-${{ github.run_id }}
       - name: Start the next run
         # Skipped when you cancel a run by hand, so cancelling stops the chain.
         if: ${{ !cancelled() }}
