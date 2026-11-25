@@ -2,7 +2,8 @@
 """Restock monitor for the PS5 Pro (Walmart Business, New only; PlayStation Direct), the
 Xbox Series X25 Special Edition (Best Buy, pre-order or in stock) and the
 Nintendo Switch 2 Zelda 40th Anniversary Edition (Nintendo Store) and the
-LEGO Star Wars Gingerbread AT-AT 40806 (Walmart Business, New under $30).
+LEGO Star Wars Gingerbread AT-AT 40806 (Walmart Business, New under $30) and the
+PS5 Pro on GameStop (New condition).
 
 Polls the product page, reads the "New" offer's availability and price from the
 page's embedded __NEXT_DATA__ JSON, and posts to a Discord webhook when it becomes
@@ -49,6 +50,15 @@ check adds a unique query string to get a fresh copy straight from Nintendo.
   LEGO_MAX_PRICE       only alert when its New price is below this (default 30)
   LEGO_STATE_FILE      like STATE_FILE, for the LEGO set
   LEGO_INTERVAL        seconds from one LEGO check to the next, +/-10% (default 15)
+
+  GAMESTOP_PID         the GameStop product id to watch; set it empty to stop watching GameStop
+  GAMESTOP_URL         the GameStop page linked in the alert
+  GAMESTOP_STATE_FILE  like STATE_FILE, for GameStop
+  GAMESTOP_INTERVAL    seconds from one GameStop check to the next, +/-10% (default 5)
+
+GameStop is read from the small JSON answer (Product-Variation) its product page asks for
+when you pick the "New" condition. It alerts, at any price, when the New console can be
+added to the cart or pre-ordered.
 """
 import json
 import os
@@ -130,6 +140,19 @@ NINTENDO_URL = os.environ.get(
 NINTENDO_STATE_FILE = os.environ.get("NINTENDO_STATE_FILE", "")
 NINTENDO_INTERVAL = int(os.environ.get("NINTENDO_INTERVAL", "10"))
 NINTENDO_BROWSERS = ["chrome", "safari", "chrome_android", "safari_ios"]
+GAMESTOP_NAME = "PS5 Pro"
+GAMESTOP_PID = os.environ.get("GAMESTOP_PID", "20015604")
+GAMESTOP_URL = os.environ.get(
+    "GAMESTOP_URL",
+    "https://www.gamestop.com/consoles-hardware/playstation-5/consoles/products/sony-playstation-5-pro-console/"
+    "20015604.html")
+GAMESTOP_STATE_FILE = os.environ.get("GAMESTOP_STATE_FILE", "")
+GAMESTOP_INTERVAL = int(os.environ.get("GAMESTOP_INTERVAL", "5"))
+GAMESTOP_API = ("https://www.gamestop.com/on/demandware.store/Sites-gamestop-us-Site/default/Product-Variation"
+                "?dwvar_{pid}_condition=New&pid={pid}&quantity=1")
+GAMESTOP_BROWSERS = ["firefox", "safari_ios", "chrome", "chrome_android"]
+# Button and stock texts GameStop shows when the New console can't be ordered online.
+GAMESTOP_NOT_BUYABLE = ("not available", "out of stock", "sold out", "unavailable", "notify me")
 BESTBUY_NOT_BUYABLE = {"COMING_SOON", "SOLD_OUT", "NOT_AVAILABLE", "UNAVAILABLE_NATIONWIDE", "TEMPORARILY_UNAVAILABLE"}
 
 
@@ -466,6 +489,67 @@ def nintendo_fetch():
     return result
 
 
+def gamestop_parse(text, pid=None):
+    """Return (status, detail) from GameStop's Product-Variation answer, status as in parse().
+
+    The answer for the New condition looks like (captured 2026-11-25 from a GitHub runner):
+      {"product": {"id": "416188", "productType": "variant", "readyToOrder": true, "available": true,
+                   "availability": {"messages": ["In Stock"], "buttonText": "Add to Cart",
+                                    "className": "availability-in-stock", "preOrdermessage": [], ...},
+                   "price": {"sales": {"value": 899.99, ...}}, ...},
+       "gtmProductAvailability": "in stock", ...}
+    "available" flips between true and false from one request to the next, so the
+    Add to Cart button's own readyToOrder flag and text decide.
+    """
+    low = text[:5000].lower()
+    if "access denied" in low or "px-captcha" in low or "just a moment" in low or "/_incapsula_" in low:
+        return "blocked", "bot check page"
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return "unknown", "GameStop answer wasn't JSON"
+    p = data.get("product") if isinstance(data, dict) else None
+    if not isinstance(p, dict) or "readyToOrder" not in p:
+        return "unknown", "readyToOrder not found in GameStop answer"
+    a = p.get("availability") if isinstance(p.get("availability"), dict) else {}
+    messages = [str(m) for m in (a.get("messages") or []) + (a.get("preOrdermessage") or []) if m]
+    button = str(a.get("buttonText") or "")
+    price = price_value(((p.get("price") or {}).get("sales") or {}).get("value"))
+    shown = (f"New: {', '.join(messages) or 'no stock message'}, button says \"{button or 'nothing'}\""
+             + (f", {money(price)}" if price is not None else ""))
+    texts = " ".join(messages + [button]).lower()
+    if p.get("readyToOrder") is not True or any(w in texts for w in GAMESTOP_NOT_BUYABLE):
+        return "out", shown
+    return "in", shown
+
+
+_gamestop_session = None
+_gamestop_browser = 0
+
+
+def gamestop_fetch():
+    global _gamestop_session, _gamestop_browser
+    if _gamestop_session is None:
+        _gamestop_session = http.Session(impersonate=GAMESTOP_BROWSERS[_gamestop_browser % len(GAMESTOP_BROWSERS)])
+    # X-Requested-With makes GameStop answer with JSON; without it the same address returns the whole page.
+    r = _gamestop_session.get(f"{GAMESTOP_API.format(pid=GAMESTOP_PID)}&_={time.time_ns()}", timeout=20,
+                              headers={"Referer": GAMESTOP_URL, "X-Requested-With": "XMLHttpRequest",
+                                       "Accept": "application/json, text/javascript, */*; q=0.01"})
+    if r.status_code in (403, 429) or r.status_code >= 500:
+        result = "blocked", f"HTTP {r.status_code}"
+    else:
+        result = gamestop_parse(r.text)
+    if result[0] == "blocked":  # switch browser profile next time
+        _gamestop_browser += 1
+        _gamestop_session = None
+    return result
+
+
+def gamestop_alert_text(detail):
+    what = "PRE-ORDERS ARE OPEN" if "pre-order" in detail.lower() or "preorder" in detail.lower() else "IN STOCK"
+    return f"🚨 **{GAMESTOP_NAME} (New): {what}** at GameStop! ({detail})\n{GAMESTOP_URL}"
+
+
 def nintendo_alert_text(detail):
     return f"🚨 **{NINTENDO_NAME}: IN STOCK** on the Nintendo Store! ({detail})\n{NINTENDO_URL}"
 
@@ -494,7 +578,9 @@ def main():
         notify("Restock monitor test message: Discord alerts are working.")
         return
     if "--demo-alert" in sys.argv:
-        if "lego" in sys.argv:
+        if "gamestop" in sys.argv:
+            sample = gamestop_alert_text('New: In Stock, button says "Add to Cart", $899.99')
+        elif "lego" in sys.argv:
             sample = lego_alert_text("New: IN_STOCK at $28.00")
         elif "nintendo" in sys.argv:
             sample = nintendo_alert_text("isSalableQty: True, $519.99")
@@ -516,6 +602,8 @@ def main():
             print(f"{NINTENDO_NAME} (Nintendo Store):", nintendo_fetch())
         if LEGO_URL:
             print(f"{LEGO_NAME}:", fetch(LEGO_URL, LEGO_MAX_PRICE))
+        if GAMESTOP_PID:
+            print(f"{GAMESTOP_NAME} (GameStop):", gamestop_fetch())
         return
     # Each product is checked on its own schedule with its own saved status,
     # so trouble with one store never delays or resets the others.
@@ -532,6 +620,9 @@ def main():
     if LEGO_URL:
         watches.append(Watch(LEGO_NAME, lambda: fetch(LEGO_URL, LEGO_MAX_PRICE), lego_alert_text,
                              LEGO_STATE_FILE, LEGO_URL, LEGO_INTERVAL))
+    if GAMESTOP_PID:
+        watches.append(Watch(f"{GAMESTOP_NAME} (GameStop)", lambda: gamestop_fetch(), gamestop_alert_text,
+                             GAMESTOP_STATE_FILE, GAMESTOP_URL, GAMESTOP_INTERVAL))
     for w in watches:
         log(f"Watching {w.url} every ~{w.interval}s")
     deadline = time.time() + RUN_FOR if RUN_FOR else None

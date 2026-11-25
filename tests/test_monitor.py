@@ -6,6 +6,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.pop("MAX_PRICE", None)
 import monitor  # noqa: E402
+monitor.GAMESTOP_PID = ""  # GameStop is tested on its own at the end
 
 RESELLER, WALMART, OPEN_BOX = "7D41131D710C33F1AA0E29FE223F3B12", "7C3AA4268C833F3FB2D9217803A3C465", "ADF3E"
 
@@ -356,4 +357,47 @@ ok = (len(sent) == 1 and "Gingerbread AT-AT" in sent[0] and "under $30" in sent[
 failed += not ok
 print(f"{'ok  ' if ok else 'FAIL'} LEGO alerts once, every ~15s, alongside the others: checks={counts}")
 print("sample lego alert:", monitor.lego_alert_text("New: IN_STOCK at $28.00").splitlines()[0])
+
+
+def gamestop_answer(ready, messages=("In Stock",), button="Add to Cart", available=True, price=899.99, pre=()):
+    """Shaped like the live Product-Variation answer for the New condition (captured 2026-11-25)."""
+    return json.dumps({"action": "Product-Variation", "gtmProductAvailability": "in stock", "product": {
+        "id": "416188", "productType": "variant", "available": available, "readyToOrder": ready,
+        "availability": {"messages": list(messages), "limitedstockmessage": [], "preOrdermessage": list(pre),
+                         "backOrdermessage": [], "buttonText": button, "className": "availability-in-stock"},
+        "price": {"sales": {"value": price, "currency": "USD", "formatted": f"${price:,.2f}"}}}})
+
+
+gamestop_cases = [
+    ("gamestop live today: in stock, Add to Cart", gamestop_answer(True), "in"),
+    ("gamestop 'available' flag flapping to false doesn't hide it", gamestop_answer(True, available=False), "in"),
+    ("gamestop not ready to order", gamestop_answer(False, ("Not Available",), "Not Available", False), "out"),
+    ("gamestop ready but button says Not Available", gamestop_answer(True, (), "Not Available"), "out"),
+    ("gamestop out of stock message", gamestop_answer(True, ("Out of Stock",), "Add to Cart"), "out"),
+    ("gamestop pre-order", gamestop_answer(True, (), "Pre-Order", pre=("Pre-order now",)), "in"),
+    ("gamestop answered with the whole page (no JSON)", "<!DOCTYPE html><html>...</html>", "unknown"),
+    ("gamestop JSON without product", json.dumps({"action": "x", "error": True}), "unknown"),
+    ("gamestop Access Denied", "<html><title>Access Denied</title></html>", "blocked"),
+]
+for name, text, want in gamestop_cases:
+    got = monitor.gamestop_parse(text)
+    ok = got[0] == want
+    failed += not ok
+    print(f"{'ok  ' if ok else 'FAIL'} {name}: {got}")
+print("sample gamestop alert:", monitor.gamestop_alert_text(monitor.gamestop_parse(gamestop_answer(True))[1]))
+
+# GameStop every ~5s next to everything else, alerting once.
+sent, clock = [], [0.0]
+counts = {k: 0 for k in counts}
+counts["gamestop"] = 0
+gs_seq = [("out", "New: Not Available")] * 10 + [("in", 'New: In Stock, button says "Add to Cart", $899.99')] * 10
+lego_seq = []
+monitor.GAMESTOP_PID, monitor.GAMESTOP_STATE_FILE, monitor.GAMESTOP_INTERVAL = "20015604", "", 5
+monitor.notify = sent.append
+monitor.gamestop_fetch = lambda: count("gamestop", gs_seq.pop(0) if gs_seq else ("out", "x"))
+monitor.main()
+ok = (len(sent) == 1 and "GameStop" in sent[0] and 180 <= counts["gamestop"] <= 225
+      and 60 <= counts["ps5"] <= 75 and 90 <= counts["psdirect"] <= 112)
+failed += not ok
+print(f"{'ok  ' if ok else 'FAIL'} GameStop alerts once, every ~5s, alongside the others: checks={counts}")
 sys.exit(1 if failed else 0)
